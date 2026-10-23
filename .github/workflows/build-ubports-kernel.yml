@@ -1,24 +1,5 @@
-      - name: Diagnose compiler
-        shell: bash
-        run: |
-          set -eu
-          cd kernel
-
-          echo "=== Available compiler ==="
-          command -v clang || true
-          clang --version || true
-
-          echo "=== Stack protector flag test ==="
-          printf 'int main(void) { return 0; }\n' > /tmp/test.c
-          clang -fstack-protector-strong \
-            -c /tmp/test.c -o /tmp/test.o
-
-          echo "PASS: clang accepts stack protector strong"
-
-          echo "=== Kernel toolchain settings ==="
-          cat build.config.common
-          cat build.config.aarch64
 name: Build UBports Kernel - sweet
+
 on:
   workflow_dispatch:
 
@@ -33,7 +14,9 @@ jobs:
 
     steps:
       - name: Install build tools
+        shell: bash
         run: |
+          set -eux
           sudo apt-get update
           sudo apt-get install -y \
             git make bc bison flex \
@@ -41,22 +24,71 @@ jobs:
             gcc-aarch64-linux-gnu \
             gcc-arm-linux-gnueabi \
             libssl-dev libelf-dev libncurses-dev \
-            python3 perl rsync
+            python3 perl rsync pahole
 
       - name: Clone kernel source
+        shell: bash
         run: |
-          set -eu
+          set -eux
+
           git clone --depth=1 \
             --branch android-11.0 \
             https://github.com/techyminati/android_kernel_xiaomi_sweet.git \
             kernel
 
           cd kernel
-          echo "=== Source commit ==="
+
+          echo "=== Commit ==="
           git log -1 --oneline
 
           echo "=== Kernel version ==="
           make kernelversion
+
+          echo "=== Required defconfig ==="
+          test -f arch/arm64/configs/vendor/sweet_user_defconfig
+
+      - name: Select and test compiler
+        shell: bash
+        run: |
+          set -eu
+
+          cd kernel
+
+          BUNDLED="prebuilts-master/clang/host/linux-x86/clang-r377782c/bin"
+
+          if [ -x "$BUNDLED/clang" ]; then
+            CLANG="$GITHUB_WORKSPACE/kernel/$BUNDLED/clang"
+            if [ -x "$BUNDLED/ld.lld" ]; then
+              LLD="$GITHUB_WORKSPACE/kernel/$BUNDLED/ld.lld"
+            else
+              LLD="$(command -v ld.lld)"
+            fi
+            echo "Using bundled Clang"
+          else
+            CLANG="$(command -v clang)"
+            LLD="$(command -v ld.lld)"
+            echo "Bundled Clang unavailable; using runner Clang"
+          fi
+
+          echo "=== Clang ==="
+          "$CLANG" --version
+
+          echo "=== Linker ==="
+          "$LLD" --version
+
+          echo "=== Test stack protector ==="
+          printf 'int test(void) { char b[16]; b[0]=0; return b[0]; }\n' \
+            > "$RUNNER_TEMP/compiler-test.c"
+
+          "$CLANG" --target=aarch64-linux-gnu \
+            -fstack-protector-strong \
+            -c "$RUNNER_TEMP/compiler-test.c" \
+            -o "$RUNNER_TEMP/compiler-test.o"
+
+          echo "PASS: compiler accepts -fstack-protector-strong"
+
+          echo "CLANG=$CLANG" >> "$GITHUB_ENV"
+          echo "LLD=$LLD" >> "$GITHUB_ENV"
 
       - name: Configure kernel
         shell: bash
@@ -69,8 +101,8 @@ jobs:
 
           make O="$GITHUB_WORKSPACE/out" \
             ARCH=arm64 \
-            CC=clang \
-            LD=ld.lld \
+            CC="$CLANG --target=aarch64-linux-gnu" \
+            LD="$LLD" \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             vendor/sweet_user_defconfig \
@@ -93,27 +125,38 @@ jobs:
 
           make O="$GITHUB_WORKSPACE/out" \
             ARCH=arm64 \
-            CC=clang \
-            LD=ld.lld \
+            CC="$CLANG --target=aarch64-linux-gnu" \
+            LD="$LLD" \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             olddefconfig \
             2>&1 | tee "$GITHUB_WORKSPACE/olddefconfig.log"
 
-          echo "=== Verify required options ==="
+          echo "=== Verify configuration ==="
+
           for option in \
-            CONFIG_DEVTMPFS CONFIG_FHANDLE CONFIG_SYSVIPC \
-            CONFIG_IPC_NS CONFIG_NET_NS CONFIG_PID_NS \
-            CONFIG_USER_NS CONFIG_UTS_NS CONFIG_VT
+            CONFIG_NAMESPACES \
+            CONFIG_DEVTMPFS \
+            CONFIG_FHANDLE \
+            CONFIG_SYSVIPC \
+            CONFIG_IPC_NS \
+            CONFIG_NET_NS \
+            CONFIG_PID_NS \
+            CONFIG_USER_NS \
+            CONFIG_UTS_NS \
+            CONFIG_VT
           do
-            grep -qx "${option}=y" "$CONFIG" || {
+            if ! grep -qx "${option}=y" "$CONFIG"; then
               echo "ERROR: $option is not enabled"
               exit 1
-            }
-            echo "PASS: $option=y"
+            fi
+            echo "PASS: ${option}=y"
           done
 
-      - name: Compile kernel
+          echo "=== Stack protector setting ==="
+          grep 'CONFIG_CC_STACKPROTECTOR' "$CONFIG" || true
+
+      - name: Compile kernel Image.gz
         shell: bash
         run: |
           set -eu
@@ -124,8 +167,8 @@ jobs:
           make -j2 \
             O="$GITHUB_WORKSPACE/out" \
             ARCH=arm64 \
-            CC=clang \
-            LD=ld.lld \
+            CC="$CLANG --target=aarch64-linux-gnu" \
+            LD="$LLD" \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             Image.gz \
@@ -134,22 +177,44 @@ jobs:
           IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz"
 
           if [ ! -s "$IMAGE" ]; then
-            echo "ERROR: Image.gz tidak ditemukan atau kosong"
+            echo "ERROR: Image.gz tidak ditemukan"
             exit 1
           fi
 
           echo "PASS: Image.gz berhasil dibuat"
           ls -lh "$IMAGE"
 
-      - name: Upload build results and logs
+      - name: Collect build results
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p artifacts
+
+          [ ! -f out/.config ] || \
+            cp out/.config artifacts/kernel.config
+
+          [ ! -f config.log ] || \
+            cp config.log artifacts/
+
+          [ ! -f olddefconfig.log ] || \
+            cp olddefconfig.log artifacts/
+
+          [ ! -f build.log ] || \
+            cp build.log artifacts/
+
+          if [ -s out/arch/arm64/boot/Image.gz ]; then
+            cp out/arch/arm64/boot/Image.gz artifacts/
+          fi
+
+          if [ -f kernel/arch/arm64/boot/Image.gz ]; then
+            cp kernel/arch/arm64/boot/Image.gz artifacts/
+          fi
+
+      - name: Upload build artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: sweet-ubports-kernel-build
-          path: |
-            out/arch/arm64/boot/Image.gz
-            out/.config
-            config.log
-            olddefconfig.log
-            build.log
+          path: artifacts/
           if-no-files-found: warn
+          retention-days: 7
