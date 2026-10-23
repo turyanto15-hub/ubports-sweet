@@ -200,6 +200,33 @@ jobs:
           grep 'CONFIG_CC_STACKPROTECTOR' \
             "$GITHUB_WORKSPACE/$OUT_DIR/.config" || true
 
+      - name: Debug kernel compiler flags
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          cd kernel
+
+          echo "=== Clang version ==="
+          clang --version
+
+          echo "=== Test flag without target ==="
+          printf 'int test(void) { return 0; }\n' > /tmp/test.c
+          clang -Werror -fstack-protector-strong \
+            -c /tmp/test.c -o /tmp/test.o
+
+          echo "=== Test flag with AArch64 target ==="
+          clang --target=aarch64-linux-gnu \
+            -Werror -fstack-protector-strong \
+            -c /tmp/test.c -o /tmp/test-arm64.o
+
+          echo "=== Kernel cc-option implementation ==="
+          grep -n -A 12 -B 5 'cc-option' Makefile | head -100
+
+          echo "=== Stack protector Makefile logic ==="
+          grep -n -A 25 -B 10 \
+            'stackp-flag\|prepare-compiler-check' M
+            akefile
       - name: Verify compiler through kernel Makefile
         shell: bash
         run: |
