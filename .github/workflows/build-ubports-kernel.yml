@@ -173,32 +173,29 @@ jobs:
             'CONFIG_(CC_STACKPROTECTOR|CFI|LTO_CLANG)' \
             "$CONFIG" || true
 
-      - name: Diagnose stack protector
+    
+      - name: Test AArch64 stack protector script
         shell: bash
         run: |
-          set -euxo pipefail
+          set -eu
 
-          cd "$KERNEL_DIR"
+          cd kernel
 
-          echo "=== Compiler ==="
-          "$CLANG" --version
+          SCRIPT="scripts/gcc-aarch64_has-stack-protector.sh"
 
-          echo "=== Stack protector test ==="
-          printf 'int main(void) { return 0; }\n' \
-            > "$RUNNER_TEMP/sp-test.c"
+          echo "=== Locate stack protector scripts ==="
+          find scripts -maxdepth 1 -name '*stack-protector*' -print
 
-          "$CLANG" -Werror -fstack-protector-strong \
-            -c "$RUNNER_TEMP/sp-test.c" \
-            -o "$RUNNER_TEMP/sp-test.o"
+          if [ -f "$SCRIPT" ]; then
+            echo "=== Script contents ==="
+            sed -n '1,240p' "$SCRIPT"
 
-          echo "=== Kernel compiler check ==="
-          grep -n -C 8 \
-            'prepare-compiler-check\|Cannot use CONFIG_CC_STACKPROTECTOR_STRONG' \
-            Makefile || true
+            echo "=== Execute script ==="
+            bash "$SCRIPT" /usr/bin/clang
+          else
+            echo "AArch64 stack protector script not found"
+          fi
 
-          echo "=== Kernel stack protector configuration ==="
-          grep 'CONFIG_CC_STACKPROTECTOR' \
-            "$GITHUB_WORKSPACE/$OUT_DIR/.config" || true
 
   
       - name: Debug kernel compiler flags
