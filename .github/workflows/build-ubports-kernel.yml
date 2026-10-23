@@ -1,5 +1,24 @@
-name: Build UBports Kernel - sweet
+      - name: Diagnose compiler
+        shell: bash
+        run: |
+          set -eu
+          cd kernel
 
+          echo "=== Available compiler ==="
+          command -v clang || true
+          clang --version || true
+
+          echo "=== Stack protector flag test ==="
+          printf 'int main(void) { return 0; }\n' > /tmp/test.c
+          clang -fstack-protector-strong \
+            -c /tmp/test.c -o /tmp/test.o
+
+          echo "PASS: clang accepts stack protector strong"
+
+          echo "=== Kernel toolchain settings ==="
+          cat build.config.common
+          cat build.config.aarch64
+name: Build UBports Kernel - sweet
 on:
   workflow_dispatch:
 
