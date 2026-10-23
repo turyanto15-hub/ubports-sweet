@@ -1,0 +1,106 @@
+name: UBports Halium Config Audit
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: Audit sweet Kernel Config
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            git build-essential bc bison flex \
+            libssl-dev libelf-dev libncurses-dev
+
+      - name: Clone kernel source
+        run: |
+          set -eu
+          git clone --depth=1 \
+            --branch android-11.0 \
+            https://github.com/techyminati/android_kernel_xiaomi_sweet.git \
+            kernel
+
+      - name: Verify source and defconfig
+        shell: bash
+        run: |
+          set -eu
+          cd kernel
+
+          echo "=== Kernel version ==="
+          grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL|EXTRAVERSION) =' Makefile
+
+          DEFCONFIG="arch/arm64/configs/vendor/sweet_user_defconfig"
+          test -f "$DEFCONFIG"
+          echo "PASS: $DEFCONFIG"
+
+          echo "=== Compiler configuration ==="
+          sed -n '1,100p' build.config.aarch64
+          sed -n '1,100p' build.config.common
+
+      - name: Generate kernel config
+        shell: bash
+        run: |
+          set -eu
+          set -o pipefail
+
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          cd kernel
+
+          make O="$GITHUB_WORKSPACE/out" \
+            ARCH=arm64 \
+            vendor/sweet_user_defconfig \
+            2>&1 | tee "$GITHUB_WORKSPACE/config-build.log"
+
+          test -s "$GITHUB_WORKSPACE/out/.config"
+          echo "PASS: .config berhasil dibuat"
+
+      - name: Audit Halium options
+        shell: bash
+        run: |
+          set -eu
+          CONFIG="$GITHUB_WORKSPACE/out/.config"
+          test -s "$CONFIG"
+
+          echo "=== Halium kernel config ==="
+
+          for option in \
+            CONFIG_DEVTMPFS \
+            CONFIG_FHANDLE \
+            CONFIG_SYSVIPC \
+            CONFIG_IPC_NS \
+            CONFIG_NET_NS \
+            CONFIG_PID_NS \
+            CONFIG_USER_NS \
+            CONFIG_UTS_NS \
+            CONFIG_VT
+          do
+            if grep -qx "${option}=y" "$CONFIG"; then
+              echo "PASS: ${option}=y"
+            elif grep -qx "# ${option} is not set" "$CONFIG"; then
+              echo "CHECK: ${option} disabled"
+            else
+              echo "CHECK: ${option} missing or not enabled"
+            fi
+          done
+
+          echo
+          echo "=== Architecture ==="
+          grep -E '^(CONFIG_ARM64|CONFIG_ARCH=)' "$CONFIG" || true
+
+      - name: Upload audit logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sweet-halium-config-audit
+          path: |
+            config-build.log
+            out/.config
+          if-no-files-found: warn
