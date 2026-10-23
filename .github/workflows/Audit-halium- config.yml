@@ -1,4 +1,4 @@
-name: UBports Halium Config Audit
+name: UBports Halium Config Test
 
 on:
   workflow_dispatch:
@@ -8,7 +8,7 @@ permissions:
 
 jobs:
   audit:
-    name: Audit sweet Kernel Config
+    name: Test Halium Kernel Options
     runs-on: ubuntu-22.04
     timeout-minutes: 30
 
@@ -28,31 +28,14 @@ jobs:
             https://github.com/techyminati/android_kernel_xiaomi_sweet.git \
             kernel
 
-      - name: Verify source and defconfig
-        shell: bash
-        run: |
-          set -eu
-          cd kernel
-
-          echo "=== Kernel version ==="
-          grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL|EXTRAVERSION) =' Makefile
-
-          DEFCONFIG="arch/arm64/configs/vendor/sweet_user_defconfig"
-          test -f "$DEFCONFIG"
-          echo "PASS: $DEFCONFIG"
-
-          echo "=== Compiler configuration ==="
-          sed -n '1,100p' build.config.aarch64
-          sed -n '1,100p' build.config.common
-
-      - name: Generate kernel config
+      - name: Generate original config
         shell: bash
         run: |
           set -eu
           set -o pipefail
 
-          mkdir -p "$GITHUB_WORKSPACE/out"
           cd kernel
+          mkdir -p "$GITHUB_WORKSPACE/out"
 
           make O="$GITHUB_WORKSPACE/out" \
             ARCH=arm64 \
@@ -60,18 +43,40 @@ jobs:
             2>&1 | tee "$GITHUB_WORKSPACE/config-build.log"
 
           test -s "$GITHUB_WORKSPACE/out/.config"
-          echo "PASS: .config berhasil dibuat"
 
-      - name: Audit Halium options
+      - name: Test Halium options
         shell: bash
         run: |
           set -eu
-          CONFIG="$GITHUB_WORKSPACE/out/.config"
-          test -s "$CONFIG"
+          set -o pipefail
 
-          echo "=== Halium kernel config ==="
+          cd kernel
+          CONFIG="$GITHUB_WORKSPACE/out/.config"
+
+          echo "=== Enable requested options for testing ==="
+
+          scripts/config --file "$CONFIG" \
+            --enable NAMESPACES \
+            --enable DEVTMPFS \
+            --enable FHANDLE \
+            --enable SYSVIPC \
+            --enable IPC_NS \
+            --enable NET_NS \
+            --enable PID_NS \
+            --enable USER_NS \
+            --enable UTS_NS \
+            --enable VT
+
+          make O="$GITHUB_WORKSPACE/out" \
+            ARCH=arm64 \
+            olddefconfig \
+            2>&1 | tee "$GITHUB_WORKSPACE/olddefconfig.log"
+
+          echo
+          echo "=== Results after olddefconfig ==="
 
           for option in \
+            CONFIG_NAMESPACES \
             CONFIG_DEVTMPFS \
             CONFIG_FHANDLE \
             CONFIG_SYSVIPC \
@@ -85,22 +90,19 @@ jobs:
             if grep -qx "${option}=y" "$CONFIG"; then
               echo "PASS: ${option}=y"
             elif grep -qx "# ${option} is not set" "$CONFIG"; then
-              echo "CHECK: ${option} disabled"
+              echo "CHECK: ${option} disabled by configuration"
             else
-              echo "CHECK: ${option} missing or not enabled"
+              echo "CHECK: ${option} missing or has another value"
             fi
           done
 
-          echo
-          echo "=== Architecture ==="
-          grep -E '^(CONFIG_ARM64|CONFIG_ARCH=)' "$CONFIG" || true
-
-      - name: Upload audit logs
+      - name: Upload config and logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: sweet-halium-config-audit
+          name: sweet-halium-config-test
           path: |
-            config-build.log
             out/.config
+            config-build.log
+            olddefconfig.log
           if-no-files-found: warn
