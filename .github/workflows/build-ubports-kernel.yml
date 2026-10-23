@@ -1,0 +1,136 @@
+name: Build UBports Kernel - sweet
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Kernel Image
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+
+    steps:
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            git make bc bison flex \
+            build-essential clang lld llvm \
+            gcc-aarch64-linux-gnu \
+            gcc-arm-linux-gnueabi \
+            libssl-dev libelf-dev libncurses-dev \
+            python3 perl rsync
+
+      - name: Clone kernel source
+        run: |
+          set -eu
+          git clone --depth=1 \
+            --branch android-11.0 \
+            https://github.com/techyminati/android_kernel_xiaomi_sweet.git \
+            kernel
+
+          cd kernel
+          echo "=== Source commit ==="
+          git log -1 --oneline
+
+          echo "=== Kernel version ==="
+          make kernelversion
+
+      - name: Configure kernel
+        shell: bash
+        run: |
+          set -eu
+          set -o pipefail
+
+          cd kernel
+          mkdir -p "$GITHUB_WORKSPACE/out"
+
+          make O="$GITHUB_WORKSPACE/out" \
+            ARCH=arm64 \
+            CC=clang \
+            LD=ld.lld \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            vendor/sweet_user_defconfig \
+            2>&1 | tee "$GITHUB_WORKSPACE/config.log"
+
+          CONFIG="$GITHUB_WORKSPACE/out/.config"
+          test -s "$CONFIG"
+
+          scripts/config --file "$CONFIG" \
+            --enable NAMESPACES \
+            --enable DEVTMPFS \
+            --enable FHANDLE \
+            --enable SYSVIPC \
+            --enable IPC_NS \
+            --enable NET_NS \
+            --enable PID_NS \
+            --enable USER_NS \
+            --enable UTS_NS \
+            --enable VT
+
+          make O="$GITHUB_WORKSPACE/out" \
+            ARCH=arm64 \
+            CC=clang \
+            LD=ld.lld \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            olddefconfig \
+            2>&1 | tee "$GITHUB_WORKSPACE/olddefconfig.log"
+
+          echo "=== Verify required options ==="
+          for option in \
+            CONFIG_DEVTMPFS CONFIG_FHANDLE CONFIG_SYSVIPC \
+            CONFIG_IPC_NS CONFIG_NET_NS CONFIG_PID_NS \
+            CONFIG_USER_NS CONFIG_UTS_NS CONFIG_VT
+          do
+            grep -qx "${option}=y" "$CONFIG" || {
+              echo "ERROR: $option is not enabled"
+              exit 1
+            }
+            echo "PASS: $option=y"
+          done
+
+      - name: Compile kernel
+        shell: bash
+        run: |
+          set -eu
+          set -o pipefail
+
+          cd kernel
+
+          make -j2 \
+            O="$GITHUB_WORKSPACE/out" \
+            ARCH=arm64 \
+            CC=clang \
+            LD=ld.lld \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            Image.gz \
+            2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+
+          IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz"
+
+          if [ ! -s "$IMAGE" ]; then
+            echo "ERROR: Image.gz tidak ditemukan atau kosong"
+            exit 1
+          fi
+
+          echo "PASS: Image.gz berhasil dibuat"
+          ls -lh "$IMAGE"
+
+      - name: Upload build results and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sweet-ubports-kernel-build
+          path: |
+            out/arch/arm64/boot/Image.gz
+            out/.config
+            config.log
+            olddefconfig.log
+            build.log
+          if-no-files-found: warn
