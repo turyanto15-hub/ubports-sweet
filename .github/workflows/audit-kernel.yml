@@ -8,56 +8,87 @@ permissions:
 
 jobs:
   audit:
-    name: Audit Redmi Note 10 Pro
+    name: Detailed Kernel Audit
     runs-on: ubuntu-22.04
     timeout-minutes: 20
 
     steps:
-      - name: Checkout repository
+      - name: Checkout workflow repository
         uses: actions/checkout@v4
 
       - name: Install tools
-        shell: bash
         run: |
-          set -eu
           sudo apt-get update
           sudo apt-get install -y git
 
       - name: Clone kernel source
-        shell: bash
         run: |
           set -eu
-          git clone --depth=1 --branch android-11.0 --single-branch https://github.com/techyminati/android_kernel_xiaomi_sweet.git kernel
-          git -C kernel log -1 --format='%H%n%s'
+          git clone --depth=1 \
+            --branch android-11.0 \
+            --single-branch \
+            https://github.com/techyminati/android_kernel_xiaomi_sweet.git \
+            kernel
 
-      - name: Audit kernel version
+      - name: Generate detailed audit report
         shell: bash
         run: |
-          set -eu
-          test -f kernel/Makefile
-          grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL|EXTRAVERSION) =' kernel/Makefile
+          set -euo pipefail
 
-      - name: Audit defconfig
-        shell: bash
-        run: |
-          set -eu
-          find kernel/arch/arm64/configs -type f -iname '*sweet*defconfig' -print
-
-      - name: Save audit report
-        if: always()
-        shell: bash
-        run: |
           {
+            echo "=== UBPORTS KERNEL AUDIT ==="
             echo "Device: Redmi Note 10 Pro"
             echo "Codename: sweet"
             echo "Target: UBports / Ubuntu Touch"
-            echo "Build performed: No"
-            echo "Compatibility: Not verified"
-          } > audit-report.txt
+            echo
+
+            echo "=== COMMIT ==="
+            git -C kernel log -1 --format='%H%n%s'
+            echo
+
+            echo "=== KERNEL VERSION ==="
+            grep -E \
+              '^(VERSION|PATCHLEVEL|SUBLEVEL|EXTRAVERSION) =' \
+              kernel/Makefile
+            echo
+
+            echo "=== SWEET DEFCONFIG CANDIDATES ==="
+            find kernel/arch/arm64/configs \
+              -type f -iname '*sweet*defconfig' -print
+            echo
+
+            echo "=== BUILD CONFIGURATION FILES ==="
+            for file in \
+              kernel/build.config.aarch64 \
+              kernel/build.config.common \
+              kernel/AndroidKernel.mk
+            do
+              if [ -f "$file" ]; then
+                echo "--- $file ---"
+                sed -n '1,100p' "$file"
+              fi
+            done
+            echo
+
+            echo "=== DEVICE TREE CANDIDATES ==="
+            if [ -d kernel/arch/arm64/boot/dts ]; then
+              find kernel/arch/arm64/boot/dts -type f \
+                | grep -Ei 'sweet|atoll|sm6150|qcom' \
+                | sed -n '1,100p' || true
+            else
+              echo "Standard device tree directory not found."
+            fi
+            echo
+
+            echo "=== STATUS ==="
+            echo "Kernel build: Not performed"
+            echo "UBports compatibility: Not verified"
+          } | tee audit-report.txt
 
       - name: Upload audit report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ubports-sweet-audit-report
+          name: ubports-sweet-detailed-audit
           path: audit-report.txt
+          if-no-files-found: warn
