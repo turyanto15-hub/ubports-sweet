@@ -233,6 +233,34 @@ jobs:
           grep 'CONFIG_CC_STACKPROTECTOR' \
             "$GITHUB_WORKSPACE/out/.config" || true
 
+      - name: Inspect stack protector check
+        shell: bash
+        run: |
+          set -eu
+
+          cd kernel
+
+          echo "=== Makefile lines 1285-1320 ==="
+          sed -n '1285,1320p' Makefile
+
+          echo "=== Stack protector references ==="
+          grep -n -C 5 'CC_STACKPROTECTOR_STRONG' Makefile || true
+
+          echo "=== Compiler test with kernel flags ==="
+          mkdir -p "$RUNNER_TEMP/kernel-test"
+
+          printf 'int test(void) { char b[16]; b[0]=0; return b[0]; }\n' \
+            > "$RUNNER_TEMP/kernel-test/test.c"
+
+          clang -Werror -fstack-protector-strong \
+            -c "$RUNNER_TEMP/kernel-test/test.c" \
+            -o "$RUNNER_TEMP/kernel-test/test.o"
+
+          echo "=== Compiler and config ==="
+          clang --version
+          grep 'CONFIG_CC_STACKPROTECTOR' \
+            "$GITHUB_WORKSPACE/out/.config"
+            || true
       - name: Verify compiler through kernel Makefile
         shell: bash
         run: |
