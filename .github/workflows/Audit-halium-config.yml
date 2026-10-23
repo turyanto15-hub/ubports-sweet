@@ -95,6 +95,19 @@ jobs:
               echo "CHECK: ${option} missing or has another value"
             fi
           done
+      - name: Save final Halium config
+        shell: bash
+        run: |
+          set -eu
+
+          CONFIG="$GITHUB_WORKSPACE/out/.config"
+          test -s "$CONFIG"
+
+          echo "=== Verify final config ==="
+          grep -E '^(CONFIG_NAMESPACES|CONFIG_DEVTMPFS|CONFIG_FHANDLE|CONFIG_SYSVIPC|CONFIG_IPC_NS|CONFIG_NET_NS|CONFIG_PID_NS|CONFIG_USER_NS|CONFIG_UTS_NS|CONFIG_VT)=y$' \
+            "$CONFIG"
+
+          echo "PASS: Final config tersimpan"
 
       - name: Upload config and logs
         if: always()
