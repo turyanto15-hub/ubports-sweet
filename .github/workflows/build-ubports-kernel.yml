@@ -1,3 +1,4 @@
+
 name: Build UBports Kernel - sweet
 
 on:
@@ -26,6 +27,7 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
+
           sudo apt-get update
           sudo apt-get install -y \
             git make bc bison flex \
@@ -53,10 +55,10 @@ jobs:
           echo "=== Kernel version ==="
           make kernelversion
 
-          echo "=== Check defconfig ==="
+          echo "=== Verify defconfig ==="
           test -f arch/arm64/configs/vendor/sweet_user_defconfig
 
-          echo "=== Check compiler scripts ==="
+          echo "=== Verify kernel files ==="
           test -f Makefile
           test -f scripts/config
 
@@ -68,13 +70,13 @@ jobs:
           CLANG="$(command -v clang)"
           LLD="$(command -v ld.lld)"
 
-          echo "=== Clang ==="
+          echo "=== Clang version ==="
           "$CLANG" --version
 
-          echo "=== LLD ==="
+          echo "=== LLD version ==="
           "$LLD" --version
 
-          echo "=== AArch64 compiler test ==="
+          echo "=== Compiler stack protector test ==="
           printf 'int test(void) { char b[16]; b[0]=0; return b[0]; }\n' \
             > "$RUNNER_TEMP/compiler-test.c"
 
@@ -85,10 +87,10 @@ jobs:
             -c "$RUNNER_TEMP/compiler-test.c" \
             -o "$RUNNER_TEMP/compiler-test.o"
 
-          echo "PASS: AArch64 stack protector test"
+          echo "PASS: Clang supports -fstack-protector-strong"
 
-          echo "=== Verify linker target ==="
-          "$LLD" --version
+          echo "=== Verify compiler target ==="
+          "$CLANG" --target=aarch64-linux-gnu -dumpmachine
 
           {
             echo "CLANG=$CLANG"
@@ -105,11 +107,11 @@ jobs:
 
           make O="$GITHUB_WORKSPACE/$OUT_DIR" \
             ARCH=arm64 \
-            CC=clang \
+            CC="$CLANG" \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            LD=ld.lld \
+            LD="$LLD" \
             vendor/sweet_user_defconfig \
             2>&1 | tee "$GITHUB_WORKSPACE/config.log"
 
@@ -136,11 +138,11 @@ jobs:
 
           make O="$GITHUB_WORKSPACE/$OUT_DIR" \
             ARCH=arm64 \
-            CC=clang \
+            CC="$CLANG" \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            LD=ld.lld \
+            LD="$LLD" \
             olddefconfig \
             2>&1 | tee "$GITHUB_WORKSPACE/olddefconfig.log"
 
@@ -171,6 +173,33 @@ jobs:
             'CONFIG_(CC_STACKPROTECTOR|CFI|LTO_CLANG)' \
             "$CONFIG" || true
 
+      - name: Diagnose stack protector
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          cd "$KERNEL_DIR"
+
+          echo "=== Compiler ==="
+          "$CLANG" --version
+
+          echo "=== Stack protector test ==="
+          printf 'int main(void) { return 0; }\n' \
+            > "$RUNNER_TEMP/sp-test.c"
+
+          "$CLANG" -Werror -fstack-protector-strong \
+            -c "$RUNNER_TEMP/sp-test.c" \
+            -o "$RUNNER_TEMP/sp-test.o"
+
+          echo "=== Kernel compiler check ==="
+          grep -n -C 8 \
+            'prepare-compiler-check\|Cannot use CONFIG_CC_STACKPROTECTOR_STRONG' \
+            Makefile || true
+
+          echo "=== Kernel stack protector configuration ==="
+          grep 'CONFIG_CC_STACKPROTECTOR' \
+            "$GITHUB_WORKSPACE/$OUT_DIR/.config" || true
+
       - name: Verify compiler through kernel Makefile
         shell: bash
         run: |
@@ -181,11 +210,11 @@ jobs:
           make -j2 \
             O="$GITHUB_WORKSPACE/$OUT_DIR" \
             ARCH=arm64 \
-            CC=clang \
+            CC="$CLANG" \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            LD=ld.lld \
+            LD="$LLD" \
             prepare \
             2>&1 | tee "$GITHUB_WORKSPACE/prepare.log"
 
@@ -199,11 +228,11 @@ jobs:
           make -j2 \
             O="$GITHUB_WORKSPACE/$OUT_DIR" \
             ARCH=arm64 \
-            CC=clang \
+            CC="$CLANG" \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            LD=ld.lld \
+            LD="$LLD" \
             Image.gz \
             2>&1 | tee "$GITHUB_WORKSPACE/build.log"
 
@@ -248,7 +277,7 @@ jobs:
             cp out/arch/arm64/boot/Image artifacts/
           fi
 
-          if [ -d kernel ]; then
+          if [ -d kernel/.git ]; then
             git -C kernel log -1 --format='%H%n%s' \
               > artifacts/source-commit.txt
           fi
