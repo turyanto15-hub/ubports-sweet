@@ -1,0 +1,81 @@
+name: UBports Halium Config Audit - sweet
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit-config:
+    name: Check Kernel Config for Halium
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            git build-essential bc bison flex \
+            libssl-dev libelf-dev libncurses-dev
+
+      - name: Clone kernel source
+        run: |
+          set -eu
+          git clone --depth=1 \
+            --branch android-11.0 \
+            --single-branch \
+            https://github.com/techyminati/android_kernel_xiaomi_sweet.git \
+            kernel
+
+      - name: Generate kernel configuration
+        shell: bash
+        run: |
+          set -eu
+          cd kernel
+
+          make O="$GITHUB_WORKSPACE/out" \
+            ARCH=arm64 \
+            vendor/sweet_user_defconfig
+
+      - name: Check Halium configuration
+        shell: bash
+        run: |
+          set -eu
+
+          CONFIG="out/.config"
+          test -f "$CONFIG"
+
+          echo "=== Kernel configuration ==="
+          grep -E '^(CONFIG_DEVTMPFS|CONFIG_FHANDLE|CONFIG_SYSVIPC|CONFIG_IPC_NS|CONFIG_NET_NS|CONFIG_PID_NS|CONFIG_USER_NS|CONFIG_UTS_NS|CONFIG_VT|CONFIG_SECURITY_APPARMOR)=' \
+            "$CONFIG" || true
+
+          echo
+          echo "=== Required options status ==="
+
+          for option in \
+            CONFIG_DEVTMPFS \
+            CONFIG_FHANDLE \
+            CONFIG_SYSVIPC \
+            CONFIG_IPC_NS \
+            CONFIG_NET_NS \
+            CONFIG_PID_NS \
+            CONFIG_USER_NS \
+            CONFIG_UTS_NS \
+            CONFIG_VT
+          do
+            if grep -qx "${option}=y" "$CONFIG"; then
+              echo "PASS: $option=y"
+            else
+              echo "CHECK: $option is not enabled as y"
+            fi
+          done
+
+      - name: Upload configuration
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sweet-halium-config-audit
+          path: out/.config
+          if-no-files-found: warn
