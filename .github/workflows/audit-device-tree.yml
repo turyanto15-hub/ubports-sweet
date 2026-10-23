@@ -1,0 +1,110 @@
+name: Audit Device Tree - Redmi Note 10 Pro
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Clone device tree
+        shell: bash
+        run: |
+          set -eu
+
+          git clone \
+            --depth=1 \
+            --branch lineage-18.1 \
+            https://github.com/alienatiz/android_device_xiaomi_sweet.git \
+            device_tree
+
+          cd device_tree
+
+          echo "=== Repository ==="
+          git remote -v
+          echo "=== Branch ==="
+          git branch --show-current
+          echo "=== Commit ==="
+          git log -1 --oneline
+
+      - name: Audit device configuration
+        shell: bash
+        run: |
+          set -eu
+
+          D=device_tree
+          R="$GITHUB_WORKSPACE/audit-report.txt"
+
+          {
+            echo "=== DEVICE TREE AUDIT: SWEET ==="
+            echo "Date: $(date -u)"
+            echo
+
+            echo "=== Commit ==="
+            git -C "$D" log -1 --oneline
+            echo
+
+            echo "=== File structure ==="
+            find "$D" -maxdepth 3 -type f \
+              -not -path '*/.git/*' | sort
+            echo
+
+            for f in \
+              README.md \
+              BoardConfig.mk \
+              device.mk \
+              AndroidProducts.mk \
+              lineage_sweet.mk \
+              lineage.dependencies \
+              manifest.xml \
+              manifest_sweet.xml \
+              vendor.prop
+            do
+              if [ -f "$D/$f" ]; then
+                echo "=== $f ==="
+                cat "$D/$f"
+                echo
+              fi
+            done
+
+            echo "=== Boot, partition and kernel settings ==="
+            grep -RniE \
+              'BOARD_BOOTIMAGE|BOARD_INIT_BOOT|BOARD_VENDOR_BOOT|BOARD_RECOVERY|BOARD_KERNEL|BOARD_FLASH_BLOCK|BOARD_USES_RECOVERY_AS_BOOT|BOARD_SUPER_PARTITION|BOARD_DYNAMIC_PARTITIONS|BOARD_USES_METADATA_PARTITION|TARGET_KERNEL|TARGET_RECOVERY' \
+              "$D" \
+              --include='*.mk' \
+              --include='*.bp' \
+              --include='*.prop' \
+              --include='*.xml' \
+              || true
+
+            echo
+            echo "=== Device and Android identifiers ==="
+            grep -RniE \
+              'sweet|sweetin|SM7150|Android 11|lineage-18.1' \
+              "$D" \
+              --include='*.mk' \
+              --include='*.prop' \
+              --include='*.xml' \
+              --include='*.txt' \
+              || true
+
+            echo
+            echo "=== Audit limitation ==="
+            echo "This is a source inspection only."
+            echo "It does not prove Ubuntu Touch compatibility."
+          } > "$R"
+
+          cat "$R"
+
+      - name: Upload audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sweet-device-tree-audit
+          path: audit-report.txt
+          if-no-files-found: warn
