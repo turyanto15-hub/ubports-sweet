@@ -12,11 +12,20 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 180
 
+    env:
+      ARCH: arm64
+      SUBARCH: arm64
+      KERNEL_DIR: kernel
+      OUT_DIR: out
+      CLANG_TRIPLE: aarch64-linux-gnu-
+      CROSS_COMPILE: aarch64-linux-gnu-
+      CROSS_COMPILE_ARM32: arm-linux-gnueabi-
+
     steps:
       - name: Install build tools
         shell: bash
         run: |
-          set -eux
+          set -euxo pipefail
           sudo apt-get update
           sudo apt-get install -y \
             git make bc bison flex \
@@ -29,7 +38,7 @@ jobs:
       - name: Clone kernel source
         shell: bash
         run: |
-          set -eux
+          set -euxo pipefail
 
           git clone --depth=1 \
             --branch android-11.0 \
@@ -38,79 +47,81 @@ jobs:
 
           cd kernel
 
-          echo "=== Commit ==="
+          echo "=== Source commit ==="
           git log -1 --oneline
 
           echo "=== Kernel version ==="
           make kernelversion
 
-          echo "=== Required defconfig ==="
+          echo "=== Check defconfig ==="
           test -f arch/arm64/configs/vendor/sweet_user_defconfig
+
+          echo "=== Check compiler scripts ==="
+          test -f Makefile
+          test -f scripts/config
 
       - name: Select and test compiler
         shell: bash
         run: |
-          set -eu
+          set -euxo pipefail
 
-          cd kernel
-
-          BUNDLED="prebuilts-master/clang/host/linux-x86/clang-r377782c/bin"
-
-          if [ -x "$BUNDLED/clang" ]; then
-            CLANG="$GITHUB_WORKSPACE/kernel/$BUNDLED/clang"
-            if [ -x "$BUNDLED/ld.lld" ]; then
-              LLD="$GITHUB_WORKSPACE/kernel/$BUNDLED/ld.lld"
-            else
-              LLD="$(command -v ld.lld)"
-            fi
-            echo "Using bundled Clang"
-          else
-            CLANG="$(command -v clang)"
-            LLD="$(command -v ld.lld)"
-            echo "Bundled Clang unavailable; using runner Clang"
-          fi
+          CLANG="$(command -v clang)"
+          LLD="$(command -v ld.lld)"
 
           echo "=== Clang ==="
           "$CLANG" --version
 
-          echo "=== Linker ==="
+          echo "=== LLD ==="
           "$LLD" --version
 
-          echo "=== Test stack protector ==="
+          echo "=== AArch64 compiler test ==="
           printf 'int test(void) { char b[16]; b[0]=0; return b[0]; }\n' \
             > "$RUNNER_TEMP/compiler-test.c"
 
-          "$CLANG" --target=aarch64-linux-gnu \
+          "$CLANG" \
+            --target=aarch64-linux-gnu \
             -fstack-protector-strong \
+            -Werror \
             -c "$RUNNER_TEMP/compiler-test.c" \
             -o "$RUNNER_TEMP/compiler-test.o"
 
-          echo "PASS: compiler accepts -fstack-protector-strong"
+          echo "PASS: AArch64 stack protector test"
 
-          echo "CLANG=$CLANG" >> "$GITHUB_ENV"
-          echo "LLD=$LLD" >> "$GITHUB_ENV"
+          echo "=== Verify linker target ==="
+          "$LLD" --version
+
+          {
+            echo "CLANG=$CLANG"
+            echo "LLD=$LLD"
+          } >> "$GITHUB_ENV"
 
       - name: Configure kernel
         shell: bash
         run: |
-          set -eu
-          set -o pipefail
+          set -euxo pipefail
 
-          cd kernel
-          mkdir -p "$GITHUB_WORKSPACE/out"
+          cd "$KERNEL_DIR"
+          mkdir -p "$GITHUB_WORKSPACE/$OUT_DIR"
 
-          make O="$GITHUB_WORKSPACE/out" \
+          make O="$GITHUB_WORKSPACE/$OUT_DIR" \
             ARCH=arm64 \
-            CC="$CLANG --target=aarch64-linux-gnu" \
-            LD="$LLD" \
+            CC=clang \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            LD=ld.lld \
             vendor/sweet_user_defconfig \
             2>&1 | tee "$GITHUB_WORKSPACE/config.log"
 
-          CONFIG="$GITHUB_WORKSPACE/out/.config"
+          CONFIG="$GITHUB_WORKSPACE/$OUT_DIR/.config"
           test -s "$CONFIG"
 
+          echo "=== Initial compiler/security configuration ==="
+          grep -E \
+            'CONFIG_(CC_STACKPROTECTOR|CFI|LTO_CLANG)' \
+            "$CONFIG" || true
+
+          echo "=== Enable required namespace options ==="
           scripts/config --file "$CONFIG" \
             --enable NAMESPACES \
             --enable DEVTMPFS \
@@ -123,16 +134,17 @@ jobs:
             --enable UTS_NS \
             --enable VT
 
-          make O="$GITHUB_WORKSPACE/out" \
+          make O="$GITHUB_WORKSPACE/$OUT_DIR" \
             ARCH=arm64 \
-            CC="$CLANG --target=aarch64-linux-gnu" \
-            LD="$LLD" \
+            CC=clang \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            LD=ld.lld \
             olddefconfig \
             2>&1 | tee "$GITHUB_WORKSPACE/olddefconfig.log"
 
-          echo "=== Verify configuration ==="
+          echo "=== Verify required configuration ==="
 
           for option in \
             CONFIG_NAMESPACES \
@@ -150,65 +162,99 @@ jobs:
               echo "ERROR: $option is not enabled"
               exit 1
             fi
+
             echo "PASS: ${option}=y"
           done
 
-          echo "=== Stack protector setting ==="
-          grep 'CONFIG_CC_STACKPROTECTOR' "$CONFIG" || true
+          echo "=== Final compiler/security configuration ==="
+          grep -E \
+            'CONFIG_(CC_STACKPROTECTOR|CFI|LTO_CLANG)' \
+            "$CONFIG" || true
+
+      - name: Verify compiler through kernel Makefile
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          cd "$KERNEL_DIR"
+
+          make -j2 \
+            O="$GITHUB_WORKSPACE/$OUT_DIR" \
+            ARCH=arm64 \
+            CC=clang \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            LD=ld.lld \
+            prepare \
+            2>&1 | tee "$GITHUB_WORKSPACE/prepare.log"
 
       - name: Compile kernel Image.gz
         shell: bash
         run: |
-          set -eu
-          set -o pipefail
+          set -euxo pipefail
 
-          cd kernel
+          cd "$KERNEL_DIR"
 
           make -j2 \
-            O="$GITHUB_WORKSPACE/out" \
+            O="$GITHUB_WORKSPACE/$OUT_DIR" \
             ARCH=arm64 \
-            CC="$CLANG --target=aarch64-linux-gnu" \
-            LD="$LLD" \
+            CC=clang \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            LD=ld.lld \
             Image.gz \
             2>&1 | tee "$GITHUB_WORKSPACE/build.log"
 
-          IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz"
+          IMAGE="$GITHUB_WORKSPACE/$OUT_DIR/arch/arm64/boot/Image.gz"
 
           if [ ! -s "$IMAGE" ]; then
-            echo "ERROR: Image.gz tidak ditemukan"
+            echo "ERROR: Image.gz was not generated"
             exit 1
           fi
 
-          echo "PASS: Image.gz berhasil dibuat"
+          echo "PASS: Image.gz generated"
           ls -lh "$IMAGE"
 
       - name: Collect build results
         if: always()
         shell: bash
         run: |
+          set -eu
+
           mkdir -p artifacts
 
-          [ ! -f out/.config ] || \
+          for file in \
+            config.log \
+            olddefconfig.log \
+            prepare.log \
+            build.log
+          do
+            if [ -f "$GITHUB_WORKSPACE/$file" ]; then
+              cp "$GITHUB_WORKSPACE/$file" artifacts/
+            fi
+          done
+
+          if [ -s out/.config ]; then
             cp out/.config artifacts/kernel.config
-
-          [ ! -f config.log ] || \
-            cp config.log artifacts/
-
-          [ ! -f olddefconfig.log ] || \
-            cp olddefconfig.log artifacts/
-
-          [ ! -f build.log ] || \
-            cp build.log artifacts/
+          fi
 
           if [ -s out/arch/arm64/boot/Image.gz ]; then
             cp out/arch/arm64/boot/Image.gz artifacts/
           fi
 
-          if [ -f kernel/arch/arm64/boot/Image.gz ]; then
-            cp kernel/arch/arm64/boot/Image.gz artifacts/
+          if [ -s out/arch/arm64/boot/Image ]; then
+            cp out/arch/arm64/boot/Image artifacts/
           fi
+
+          if [ -d kernel ]; then
+            git -C kernel log -1 --format='%H%n%s' \
+              > artifacts/source-commit.txt
+          fi
+
+          echo "=== Collected artifacts ==="
+          ls -lh artifacts || true
 
       - name: Upload build artifacts
         if: always()
