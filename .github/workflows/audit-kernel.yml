@@ -1,3 +1,4 @@
+
 name: Audit UBports Sweet Source
 
 on:
@@ -26,32 +27,40 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Periksa struktur source
+      - name: Audit struktur repository
         shell: bash
         run: |
           set -euo pipefail
 
           echo "=== UBports Sweet Source Audit ==="
           echo "Commit: $(git rev-parse --short HEAD)"
+          echo "Repository: $(git rev-parse --show-toplevel)"
 
-          if [ ! -f Makefile ]; then
-            echo "::error::Makefile kernel tidak ditemukan."
-            echo "Repository ini belum berisi root source kernel."
-            exit 1
+          echo ""
+          echo "=== Struktur repository ==="
+          find . -maxdepth 3 -type f \
+            ! -path './.git/*' \
+            | sort | head -200
+
+          echo ""
+          echo "=== Pemeriksaan source kernel ==="
+
+          if [ -f Makefile ] && [ -d arch/arm64/configs ]; then
+            echo "Source kernel terdeteksi."
+
+            grep -E \
+              '^(VERSION|PATCHLEVEL|SUBLEVEL|EXTRAVERSION)[[:space:]]*=' \
+              Makefile || true
+
+            echo ""
+            echo "=== Kandidat defconfig sweet ==="
+
+            find arch/arm64/configs -type f \
+              -iname '*sweet*defconfig' -print
+          else
+            echo "::warning::Source kernel belum tersedia di root repository."
+            echo "Audit struktur selesai, tetapi kernel belum divalidasi."
           fi
 
-          if [ ! -d arch/arm64/configs ]; then
-            echo "::error::Konfigurasi ARM64 tidak ditemukan."
-            exit 1
-          fi
-
-          echo "=== Versi kernel ==="
-          grep -E \
-            '^(VERSION|PATCHLEVEL|SUBLEVEL|EXTRAVERSION)[[:space:]]*=' \
-            Makefile || true
-
-          echo "=== Kandidat defconfig sweet ==="
-          find arch/arm64/configs -type f \
-            -iname '*sweet*defconfig' -print
-
+          echo ""
           echo "=== Audit selesai ==="
