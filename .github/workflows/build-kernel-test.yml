@@ -30,36 +30,27 @@ jobs:
           grep -n -A 35 -B 10 'kszphy_get_strings' \
             kernel/drivers/net/phy/micrel.c
 
+ 
       - name: Diagnose Micrel memcpy overflow
         shell: bash
         run: |
           set -euo pipefail
 
-          python3 - <<'PY'
-          from pathlib import Path
+          FILE="kernel/drivers/net/phy/micrel.c"
 
-          p = Path("kernel/drivers/net/phy/micrel.c")
-          s = p.read_text()
+          if [ ! -f "$FILE" ]; then
+            echo "ERROR: File micrel.c tidak ditemukan."
+            exit 1
+          fi
 
-          marker = "kszphy_get_strings"
-          if s.count(marker) != 1:
-              raise SystemExit(
-                  "ERROR: Target code not found exactly once. "
-                  "No changes made."
-              )
+          echo "=== Semua kemunculan kszphy_get_strings ==="
+          grep -n -F 'kszphy_get_strings' "$FILE" || true
 
-          lines = s.splitlines()
-          for i, line in enumerate(lines):
-              if marker in line:
-                  start = max(0, i - 10)
-                  end = min(len(lines), i + 40)
-                  print("=== Relevant source ===")
-                  for j in range(start, end):
-                      print(f"{j + 1}: {lines[j]}")
-                  break
+          echo "=== Kode sekitar baris 727 ==="
+          sed -n '700,745p' "$FILE"
 
-          print("Diagnosis complete. Source was not modified.")
-          PY
+          echo "=== Diagnosis selesai; belum ada patch Micrel ==="
+
 
       - name: Fix floating-point in DSI panel driver
         shell: bash
