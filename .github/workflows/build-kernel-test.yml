@@ -69,8 +69,7 @@ jobs:
           CROSS_COMPILE=aarch64-linux-gnu- \
           Image.gz dtbs
             
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-gnu- \          
             olddefconfig
             
             echo "=== MODVERSIONS setelah perubahan ==="
@@ -86,10 +85,7 @@ jobs:
 
           make -j2 O="$GITHUB_WORKSPACE/out" \
             ARCH=arm64 \
-            CC=clang-11 \
-            LD=ld.lld-11 \
             CROSS_COMPILE=aarch64-linux-gnu- \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
             Image.gz dtbs
 
       - name: Upload build outputs
