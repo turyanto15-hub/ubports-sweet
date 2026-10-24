@@ -211,6 +211,14 @@ jobs:
 
           echo "PASS: Image.gz generated"
           ls -lh "$IMAGE"
+      - name: Inspect DSI backlight calculation
+        run: |
+          echo "=== dc_set_backlight ==="
+          sed -n '880,950p' kernel/drivers/gpu/drm/msm/dsi-staging/dsi_panel.c
+
+          echo "=== Variable declarations ==="
+          grep -n -E 'crcValue|mDCBLCoeff|bl_lvl' \
+            kernel/drivers/gpu/drm/msm/dsi-staging/dsi_panel.c
       - name: Build kernel
         run: |
           set -o pipefail
