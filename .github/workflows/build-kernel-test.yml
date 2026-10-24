@@ -10,7 +10,7 @@ permissions:
 jobs:
   build-kernel:
     runs-on: ubuntu-22.04
-    timeout-minutes: 60
+    timeout-minutes: 90
 
     steps:
       - name: Checkout kernel source
@@ -21,72 +21,67 @@ jobs:
           path: kernel
           persist-credentials: false
 
-      - name: Install build dependencies
+      - name: Install dependencies
+        shell: bash
         run: |
+          set -euxo pipefail
           sudo apt-get update
           sudo apt-get install -y \
             bc bison build-essential flex \
             libssl-dev libelf-dev libncurses-dev \
-            clang-11 lld-11 \
             gcc-aarch64-linux-gnu \
+            binutils-aarch64-linux-gnu \
             python3
 
-      - name: Verify source and toolchain
+      - name: Verify source
         shell: bash
         run: |
-          set -euo pipefail
+          set -euxo pipefail
           cd kernel
 
-          echo "=== Kernel version ==="
+          git log -1 --oneline
           make kernelversion
 
-          echo "=== Compiler ==="
-          clang-11 --version
-          ld.lld-11 --version
-
           test -f arch/arm64/configs/vendor/sweet_user_defconfig
+          test -f drivers/gpu/drm/msm/dsi-staging/dsi_panel.c
 
-      - name: Generate kernel configuration
+          aarch64-linux-gnu-gcc --version
+
+      - name: Generate configuration
         shell: bash
         run: |
-          set -euo pipefail
+          set -euxo pipefail
           cd kernel
 
           mkdir -p "$GITHUB_WORKSPACE/out"
 
           make O="$GITHUB_WORKSPACE/out" \
-            ARCH=arm64 \  
+            ARCH=arm64 \
             CROSS_COMPILE=aarch64-linux-gnu- \
             vendor/sweet_user_defconfig
-            echo "=== MODVERSIONS sebelum perubahan ==="
-            grep -E '^CONFIG_MODVERSIONS=|^# CONFIG_MODVERSIONS is not set' \
-            "$GITHUB_WORKSPACE/out/.config" || true
-            scripts/config --file "$GITHUB_WORKSPACE/out/.config" \
-            -d MODVERSIONS
-            
-          make -j2 O="$GITHUB_WORKSPACE/out" \
-          ARCH=arm64 \
-          CROSS_COMPILE=aarch64-linux-gnu- \
-          Image.gz dtbs
-            
-            CROSS_COMPILE=aarch64-linux-gnu- \          
-            olddefconfig
-            
-            echo "=== MODVERSIONS setelah perubahan ==="
-            grep -E '^CONFIG_MODVERSIONS=|^# CONFIG_MODVERSIONS is not set' \
-            "$GITHUB_WORKSPACE/out/.config" || true
+
           test -s "$GITHUB_WORKSPACE/out/.config"
 
-      - name: Compile kernel image
+      - name: Compile kernel
         shell: bash
         run: |
-          set -euo pipefail
+          set -euxo pipefail
           cd kernel
 
           make -j2 O="$GITHUB_WORKSPACE/out" \
             ARCH=arm64 \
             CROSS_COMPILE=aarch64-linux-gnu- \
             Image.gz dtbs
+
+      - name: Check outputs
+        if: success()
+        shell: bash
+        run: |
+          set -euxo pipefail
+          test -s out/arch/arm64/boot/Image.gz
+
+          find out/arch/arm64/boot/dts \
+            -type f -name '*.dtb' -print
 
       - name: Upload build outputs
         if: always()
