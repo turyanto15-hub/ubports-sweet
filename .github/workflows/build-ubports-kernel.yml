@@ -1,4 +1,4 @@
-name: Patch DSI Panel - UBports Sweet
+name: Fix DSI Panel Floating Point
 
 on:
   workflow_dispatch:
@@ -13,179 +13,124 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          repository: turyanto15-hub/ubports-sweet
+          ref: main
+          persist-credentials: false
 
-      - name: Inspect and patch DSI panel
+      - name: Install tools
+        run: |
+          set -eu
+          sudo apt-get update
+          sudo apt-get install -y python3
+
+      - name: Inspect DSI panel source
         shell: bash
         run: |
-          set -euo pipefail
+          set -eu
 
           FILE="kernel/drivers/gpu/drm/msm/dsi-staging/dsi_panel.c"
 
           if [ ! -f "$FILE" ]; then
-            echo "::error::File tidak ditemukan: $FILE"
-            echo "Periksa struktur repository dan lokasi source kernel."
+            echo "::error::File dsi_panel.c tidak ditemukan di path yang diharapkan."
+            echo "Periksa struktur repository dan lokasi file."
+            find . -type f -name dsi_panel.c -print
             exit 1
           fi
 
-          echo "=== Lokasi rumus bermasalah ==="
-          grep -n -F \
-            'crcValue = 0.5 + mDCBLCoeff[0] * bl_lvl + mDCBLCoeff[1];' \
-            "$FILE" || true
+          echo "=== Lokasi ekspresi backlight ==="
+          grep -n -C 8 'crcValue' "$FILE" || true
 
-          echo "=== Deklarasi variabel ==="
+          echo "=== Deklarasi variabel terkait ==="
           grep -n -E \
-            'crcValue|mDCBLCoeff|bl_lvl' "$FILE" || true
+            'crcValue|bl_lvl|mDCBLCoeff' "$FILE" || true
+
+      - name: Apply verified integer-only patch
+        shell: bash
+        run: |
+          set -eu
 
           python3 <<'PY'
+          from pathlib import Path
           import re
           import sys
-          from pathlib import Path
 
           path = Path(
               "kernel/drivers/gpu/drm/msm/dsi-staging/dsi_panel.c"
           )
+
+          if not path.is_file():
+              sys.exit("ERROR: dsi_panel.c tidak ditemukan")
+
           source = path.read_text()
-
-          old = (
-              "crcValue = 0.5 + mDCBLCoeff[0] "
-              "* bl_lvl + mDCBLCoeff[1];"
-          )
-          new = (
-              "crcValue = mDCBLCoeff[0] "
-              "* bl_lvl + mDCBLCoeff[1];"
+          target = (
+              "crcValue = 0.5 + mDCBLCoeff[0] * "
+              "bl_lvl + mDCBLCoeff[1];"
           )
 
-          if source.count(old) != 1:
-              print(
-                  "::error::Rumus target tidak ditemukan tepat satu kali. "
-                  "Source tidak diubah."
+          if source.count(target) != 1:
+              sys.exit(
+                  "ERROR: Ekspresi tidak ditemukan tepat satu kali. "
+                  "Tidak ada perubahan yang diterapkan."
               )
-              sys.exit(1)
 
-          # Cari deklarasi variabel yang didukung.
-          # Jika tipe berupa typedef, macro, atau deklarasi kompleks,
-          # workflow berhenti agar tidak membuat asumsi yang salah.
           lines = source.splitlines()
+          match_index = next(
+              i for i, line in enumerate(lines)
+              if target in line
+          )
 
-          names = {
-              "crcValue": None,
-              "bl_lvl": None,
-              "mDCBLCoeff": None,
+          # Periksa deklarasi di sekitar ekspresi terlebih dahulu.
+          start = max(0, match_index - 180)
+          end = min(len(lines), match_index + 1)
+          context = "\n".join(lines[start:end])
+
+          declarations = {
+              "crcValue": False,
+              "bl_lvl": False,
+              "mDCBLCoeff": False,
           }
 
-          integer_types = {
-              "char", "short", "int", "long",
-              "signed", "unsigned", "u8", "u16",
-              "u32", "u64", "s8", "s16", "s32", "s64",
-          }
-
-          float_types = {"float", "double", "long double"}
-
-          for line in lines:
-              stripped = line.strip()
-
-              if not stripped or stripped.startswith(("//", "/*", "*")):
-                  continue
-
-              if not re.search(
-                  r"\b(crcValue|bl_lvl|mDCBLCoeff)\b", stripped
-              ):
-                  continue
-
-              if not re.search(r"[;=]", stripped):
-                  continue
-
-              # Abaikan baris pemakaian dalam ekspresi, bukan deklarasi.
-              declaration = re.match(
-                  r"^(?:(?:static|const|volatile|unsigned|signed|"
-                  r"long|short)\s+)*(?P<type>"
-                  r"(?:u8|u16|u32|u64|s8|s16|s32|s64|"
-                  r"char|short|int|long|float|double)"
-                  r"(?:\s+(?:long|int))?)\s+"
-                  r"(?P<rest>[^;]+);$",
-                  stripped,
+          for name in declarations:
+              pattern = (
+                  r'\b(?:float|double|_Float\d+)\b'
+                  r'[^;{}]*\b' + re.escape(name) + r'\b'
               )
-
-              if not declaration:
-                  continue
-
-              ctype = declaration.group("type").strip()
-              rest = declaration.group("rest")
-
-              for name in names:
-                  if re.search(r"\b" + name + r"\b", rest):
-                      names[name] = (ctype, stripped)
-
-          missing = [name for name, value in names.items() if value is None]
-
-          if missing:
-              print(
-                  "::error::Deklarasi tidak dapat diverifikasi: "
-                  + ", ".join(missing)
-              )
-              print(
-                  "Source tidak diubah. Periksa deklarasi asli, "
-                  "termasuk typedef, macro, dan cakupan variabel."
-              )
-              sys.exit(1)
-
-          for name, (ctype, declaration) in names.items():
-              print(f"{name}: {ctype} | {declaration}")
-
-              if ctype in float_types:
-                  print(
-                      f"::error::Variabel {name} menggunakan "
-                      f"tipe floating-point. Patch otomatis dibatalkan."
+              if re.search(pattern, context):
+                  sys.exit(
+                      "ERROR: Tipe floating-point terdeteksi pada "
+                      + name + ". Patch dibatalkan."
                   )
-                  sys.exit(1)
 
-              tokens = set(ctype.split())
-              if not tokens.issubset(integer_types):
-                  print(
-                      f"::error::Tipe {name} belum didukung "
-                      f"untuk verifikasi otomatis."
-                  )
-                  sys.exit(1)
+          # Hanya hapus 0.5 jika variabel terkait telah diverifikasi
+          # bukan deklarasi float/double pada konteks yang tersedia.
+          # Jangan mengubah opsi compiler global.
+          replacement = (
+              "crcValue = mDCBLCoeff[0] * "
+              "bl_lvl + mDCBLCoeff[1];"
+          )
 
-          # Pastikan koefisien merupakan array berindeks minimal 0 dan 1.
-          if not re.search(
-              r"\bmDCBLCoeff\s*\[\s*(?:2|[3-9]|[1-9][0-9]+)\s*\]",
-              names["mDCBLCoeff"][1],
-          ):
-              print(
-                  "::error::Ukuran array mDCBLCoeff belum dapat "
-                  "diverifikasi minimal dua elemen."
-              )
-              sys.exit(1)
+          updated = source.replace(target, replacement, 1)
 
-          # Jangan mengubah rumus sebelum seluruh pemeriksaan lulus.
-          patched = source.replace(old, new, 1)
-          path.write_text(patched)
+          if updated == source:
+              sys.exit("ERROR: Tidak ada perubahan yang diterapkan.")
 
-          print("Patch diterapkan setelah pemeriksaan tipe data.")
-          print("Perubahan: menghapus literal floating-point 0.5.")
+          path.write_text(updated)
+          print("Patch diterapkan; periksa diff sebelum melanjutkan.")
           PY
 
-      - name: Verify patch
+      - name: Review patch
         shell: bash
         run: |
-          set -euo pipefail
+          set -eu
 
-          FILE="kernel/drivers/gpu/drm/msm/dsi-staging/dsi_panel.c"
-
-          if grep -F \
-            'crcValue = 0.5 + mDCBLCoeff[0] * bl_lvl + mDCBLCoeff[1];' \
-            "$FILE"; then
-            echo "::error::Rumus floating-point masih ditemukan."
-            exit 1
-          fi
-
-          echo "=== Perubahan source ==="
-          git diff -- "$FILE"
+          git diff --check
+          git diff -- \
+            kernel/drivers/gpu/drm/msm/dsi-staging/dsi_panel.c
 
       - name: Upload patched source
         uses: actions/upload-artifact@v4
         with:
-          name: patched-dsi-panel-source
+          name: sweet-dsi-panel-patch
           path: kernel/drivers/gpu/drm/msm/dsi-staging/dsi_panel.c
           if-no-files-found: error
