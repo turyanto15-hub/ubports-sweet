@@ -1,0 +1,87 @@
+
+name: "01 - Validate Sweet Sources"
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/01-validate-sources.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Check source repositories
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout build repository
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Install validation tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git
+
+      - name: Check upstream repositories
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p reports
+
+          check_repo() {
+            local name="$1"
+            local url="$2"
+            local output="reports/${name}.txt"
+
+            echo "Checking ${name}..."
+
+            {
+              echo "Repository: ${url}"
+
+              if git ls-remote --symref "$url" HEAD \
+                  > /tmp/refs.txt 2>/tmp/git-error.txt; then
+                cat /tmp/refs.txt
+                echo "STATUS=REACHABLE"
+              else
+                cat /tmp/git-error.txt
+                echo "STATUS=UNAVAILABLE"
+                return 1
+              fi
+
+              echo ""
+              echo "Relevant branches:"
+              git ls-remote --heads "$url" \
+                | grep -E \
+                  'refs/heads/(lineage-18\.1|lineage-19\.1|lineage-20\.0|lineage-23\.2)$' \
+                || true
+            } > "$output"
+          }
+
+          check_repo kernel \
+            https://github.com/xiaomi-sm6150/android_kernel_xiaomi_sm6150.git
+
+          check_repo device \
+            https://github.com/xiaomi-sm6150/android_device_xiaomi_sweet.git
+
+          check_repo vendor \
+            https://github.com/xiaomi-sm6150/proprietary_vendor_xiaomi_sweet.git
+
+          echo "=== Source validation reports ==="
+          cat reports/*.txt
+
+      - name: Upload validation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sweet-source-validation
+          path: reports/
+          if-no-files-found: warn
+          retention-days: 7
+
