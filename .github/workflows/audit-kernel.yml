@@ -1,94 +1,110 @@
-name: UBports Kernel Audit - sweet
+name: Audit UBports Sweet Source
 
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/audit-ubports-sweet.yml"
 
 permissions:
   contents: read
 
 jobs:
   audit:
-    name: Detailed Kernel Audit
+    name: Audit source kernel dan konfigurasi
     runs-on: ubuntu-22.04
-    timeout-minutes: 20
 
     steps:
-      - name: Checkout workflow repository
+      - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
-      - name: Install tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y git
-
-      - name: Clone kernel source
-        run: |
-          set -eu
-          git clone --depth=1 \
-            --branch android-11.0 \
-            --single-branch \
-            https://github.com/techyminati/android_kernel_xiaomi_sweet.git \
-            kernel
-
-      - name: Generate detailed audit report
+      - name: Periksa struktur source
         shell: bash
         run: |
-          set -euo pipefail
+          set -uo pipefail
 
-          {
-            echo "=== UBPORTS KERNEL AUDIT ==="
-            echo "Device: Redmi Note 10 Pro"
-            echo "Codename: sweet"
-            echo "Target: UBports / Ubuntu Touch"
-            echo
+          echo "===================================="
+          echo " AUDIT UBPORTS - REDMI NOTE 10 PRO"
+          echo " Codename: sweet"
+          echo "===================================="
 
-            echo "=== COMMIT ==="
-            git -C kernel log -1 --format='%H%n%s'
-            echo
+          echo
+          echo "=== Commit yang diperiksa ==="
+          git log -1 --oneline || true
 
-            echo "=== KERNEL VERSION ==="
-            grep -E \
-              '^(VERSION|PATCHLEVEL|SUBLEVEL|EXTRAVERSION) =' \
-              kernel/Makefile
-            echo
-
-            echo "=== SWEET DEFCONFIG CANDIDATES ==="
-            find kernel/arch/arm64/configs \
-              -type f -iname '*sweet*defconfig' -print
-            echo
-
-            echo "=== BUILD CONFIGURATION FILES ==="
-            for file in \
-              kernel/build.config.aarch64 \
-              kernel/build.config.common \
-              kernel/AndroidKernel.mk
-            do
-              if [ -f "$file" ]; then
-                echo "--- $file ---"
-                sed -n '1,100p' "$file"
-              fi
-            done
-            echo
-
-            echo "=== DEVICE TREE CANDIDATES ==="
-            if [ -d kernel/arch/arm64/boot/dts ]; then
-              find kernel/arch/arm64/boot/dts -type f \
-                | grep -Ei 'sweet|atoll|sm6150|qcom' \
-                | sed -n '1,100p' || true
+          echo
+          echo "=== Struktur direktori utama ==="
+          for path in \
+            .github/workflows \
+            kernel \
+            device \
+            vendor \
+            arch/arm64/configs
+          do
+            if [ -d "$path" ]; then
+              echo "[ADA] $path"
             else
-              echo "Standard device tree directory not found."
+              echo "[TIDAK ADA] $path"
             fi
-            echo
+          done
 
-            echo "=== STATUS ==="
-            echo "Kernel build: Not performed"
-            echo "UBports compatibility: Not verified"
-          } | tee audit-report.txt
+          echo
+          echo "=== Informasi versi kernel ==="
+          if [ -f Makefile ]; then
+            grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL|EXTRAVERSION)[[:space:]]*=' \
+              Makefile || true
+          else
+            echo "Makefile root tidak ditemukan"
+          fi
 
-      - name: Upload audit report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ubports-sweet-detailed-audit
-          path: audit-report.txt
-          if-no-files-found: warn
+          echo
+          echo "=== Kandidat konfigurasi sweet ==="
+          find . -type f \
+            \( -iname '*sweet*defconfig' \
+               -o -iname '*sweet*config' \) \
+            -not -path './.git/*' \
+            -print 2>/dev/null | head -100 || true
+
+          echo
+          echo "=== Pemeriksaan driver display ==="
+          find . -type f \
+            \( -name 'dsi_panel.c' \
+               -o -name 'Makefile' \) \
+            -path '*/drivers/gpu/drm/msm/*' \
+            -not -path '*/.git/*' \
+            -print 2>/dev/null | head -100 || true
+
+          echo
+          echo "=== Pemeriksaan file kernel utama ==="
+          for path in \
+            Makefile \
+            Kconfig \
+            arch/arm64/Makefile \
+            arch/arm64/configs \
+            include/configs
+          do
+            if [ -e "$path" ]; then
+              echo "[ADA] $path"
+            else
+              echo "[PERLU DIPERIKSA] $path"
+            fi
+          done
+
+          echo
+          echo "=== Kandidat file boot dan packaging ==="
+          find . -maxdepth 4 -type f \
+            \( -name 'AnyKernel3' \
+               -o -name 'Image.gz-dtb' \
+               -o -name 'boot.img' \
+               -o -name 'mkbootimg' \
+               -o -name 'BoardConfig.mk' \
+               -o -name 'Android.mk' \
+               -o -name 'Android.bp' \) \
+            -not -path './.git/*' \
+            -print 2>/dev/null | head -100 || true
+
+          echo
+          echo "=== Audit selesai ==="
+          echo "Periksa log untuk menentukan langkah perbaikan."
