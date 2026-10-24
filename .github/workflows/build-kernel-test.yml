@@ -55,11 +55,8 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/out"
 
           make O="$GITHUB_WORKSPACE/out" \
-            ARCH=arm64 \
-            CC=clang-11 \
-            LD=ld.lld-11 \
+            ARCH=arm64 \  
             CROSS_COMPILE=aarch64-linux-gnu- \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
             vendor/sweet_user_defconfig
             echo "=== MODVERSIONS sebelum perubahan ==="
             grep -E '^CONFIG_MODVERSIONS=|^# CONFIG_MODVERSIONS is not set' \
@@ -67,10 +64,10 @@ jobs:
             scripts/config --file "$GITHUB_WORKSPACE/out/.config" \
             -d MODVERSIONS
             
-            make O="$GITHUB_WORKSPACE/out" \
-            ARCH=arm64 \
-            CC=clang-11 \
-            LD=ld.lld-11 \
+          make -j2 O="$GITHUB_WORKSPACE/out" \
+          ARCH=arm64 \
+          CROSS_COMPILE=aarch64-linux-gnu- \
+          Image.gz dtbs
             
             CROSS_COMPILE=aarch64-linux-gnu- \
             CLANG_TRIPLE=aarch64-linux-gnu- \
