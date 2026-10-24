@@ -21,6 +21,32 @@ jobs:
           path: kernel
           persist-credentials: false
 
+      - name: Fix Micrel PHY string overflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("kernel/drivers/net/phy/micrel.c")
+          s = p.read_text()
+
+          old = """memcpy(data + i * ETH_GSTRING_LEN,
+          kszphy_hw_stats[i].string, ETH_GSTRING_LEN);"""
+
+          new = """strlcpy(data + i * ETH_GSTRING_LEN,
+          kszphy_hw_stats[i].string, ETH_GSTRING_LEN);"""
+
+          if s.count(old) != 1:
+              raise SystemExit(
+                  "ERROR: Target code not found exactly once."
+              )
+
+          s = s.replace(old, new, 1)
+          p.write_text(s)
+          print("Micrel PHY string-copy patch applied.")
+          PY
+
       - name: Fix floating-point in DSI panel driver
         shell: bash
         run: |
