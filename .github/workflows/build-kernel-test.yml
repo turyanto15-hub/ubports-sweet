@@ -21,6 +21,41 @@ jobs:
           path: kernel
           persist-credentials: false
 
+      - name: Fix floating-point in DSI panel driver
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("kernel/drivers/gpu/drm/msm/dsi-staging/dsi_panel.c")
+          s = p.read_text()
+
+          old_decl = "float mDCBLCoeff[2] = {0.5125, 4.9};"
+          new_decl = "/* Use integer arithmetic in kernel context. */"
+
+          old_expr = (
+              "crcValue = 0.5 + mDCBLCoeff[0] * bl_lvl "
+              "+ mDCBLCoeff[1];"
+          )
+          new_expr = (
+              "crcValue = (int)((5125ULL * bl_lvl + 54000ULL) "
+              "/ 10000ULL);"
+          )
+
+          if s.count(old_decl) != 1 or s.count(old_expr) != 1:
+              raise SystemExit(
+                  "ERROR: Source does not match expected code; "
+                  "no patch applied."
+              )
+
+          s = s.replace(old_decl, new_decl, 1)
+          s = s.replace(old_expr, new_expr, 1)
+          p.write_text(s)
+
+          print("Patched DSI panel floating-point calculation.")
+     
+          PY
       - name: Install dependencies
         shell: bash
         run: |
