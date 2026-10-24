@@ -198,66 +198,28 @@ jobs:
 
 
   
-      - name: Debug kernel compiler flags
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          cd kernel
-
-          echo "=== Clang version ==="
-          clang --version
-
-          echo "=== Test stack protector ==="
-          printf 'int test(void) { return 0; }\n' > /tmp/test.c
-
-          clang -Werror -fstack-protector-strong \
-            -c /tmp/test.c -o /tmp/test.o
-
-          clang --target=aarch64-linux-gnu \
-            -Werror -fstack-protector-strong \
-            -c /tmp/test.c -o /tmp/test-arm64.o
-
-          echo "=== Stack protector logic in Makefile ==="
-          grep -n -A 25 -B 10 \
-            'CC_STACKPROTECTOR_STRONG\|prepare-compiler-check' \
-            Makefile || true
-
-          echo "=== Compiler flag definitions ==="
-          sed -n '450,530p' Makefile
-
-          echo "=== Kernel configuration ==="
-          grep 'CONFIG_CC_STACKPROTECTOR' \
-            "$GITHUB_WORKSPACE/out/.config" || true
-
+ 
       - name: Inspect stack protector check
         shell: bash
         run: |
           set -eu
-
           cd kernel
 
-          echo "=== Makefile lines 1285-1320 ==="
-          sed -n '1285,1320p' Makefile
+          echo "=== Locate stack protector scripts ==="
+          find scripts -maxdepth 1 -type f -iname '*stack*protector*' -print
 
-          echo "=== Stack protector references ==="
-          grep -n -C 5 'CC_STACKPROTECTOR_STRONG' Makefile || true
+          echo "=== Makefile stack protector logic ==="
+          sed -n '740,765p' Makefile
+          sed -n '1295,1320p' Makefile
 
-          echo "=== Compiler test with kernel flags ==="
-          mkdir -p "$RUNNER_TEMP/kernel-test"
+          echo "=== Compiler flag test ==="
+          printf 'int test(void) { char b[16]; b[0]=0; return b[0]; }\n' > /tmp/test.c
+          clang -Werror -fstack-protector-strong -c /tmp/test.c -o /tmp/test.o
+          clang --target=aarch64-linux-gnu -Werror -fstack-protector-strong -c /tmp/test.c -o /tmp/test-arm64.o
 
-          printf 'int test(void) { char b[16]; b[0]=0; return b[0]; }\n' \
-            > "$RUNNER_TEMP/kernel-test/test.c"
+          echo "=== Find stackp-check definition ==="
+          grep -R -n 'stackp-check' arch scripts Makefile || true
 
-          clang -Werror -fstack-protector-strong \
-            -c "$RUNNER_TEMP/kernel-test/test.c" \
-            -o "$RUNNER_TEMP/kernel-test/test.o"
-
-          echo "=== Compiler and config ==="
-          clang --version
-          grep 'CONFIG_CC_STACKPROTECTOR' \
-            "$GITHUB_WORKSPACE/out/.config"
-            || true
       - name: Verify compiler through kernel Makefile
         shell: bash
         run: |
