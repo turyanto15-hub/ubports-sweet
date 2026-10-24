@@ -50,7 +50,10 @@ jobs:
           sed -n '700,745p' "$FILE"
 
           echo "=== Diagnosis selesai; belum ada patch Micrel ==="
-
+      
+      - name: Debug Micrel PHY compile error
+        run: |
+          sed -n '700,740p' kernel/drivers/net/phy/micrel.c
 
       - name: Fix floating-point in DSI panel driver
         shell: bash
