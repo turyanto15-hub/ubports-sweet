@@ -22,12 +22,47 @@ jobs:
           persist-credentials: false
 
 
+
       - name: Inspect Micrel PHY source
         shell: bash
         run: |
           set -euxo pipefail
-          grep -n -A 25 -B 10 'kszphy_get_strings' kernel/drivers/net/phy/micrel.c
+          echo "=== Micrel source around failing function ==="
+          sed -n '680,750p' kernel/drivers/net/phy/micrel.c
 
+      - name: Diagnose Micrel memcpy overflow
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("kernel/drivers/net/phy/micrel.c")
+          s = p.read_text()
+          marker = "kszphy_get_strings"
+
+          if s.count(marker) != 1:
+              raise SystemExit(
+                  "ERROR: Function marker not unique; "
+                  "source was not modified."
+              )
+
+          lines = s.splitlines()
+          for i, line in enumerate(lines):
+              if marker in line:
+                  start = max(0, i - 5)
+                  end = min(len(lines), i + 35)
+                  print("\n".join(
+                      f"{j + 1}: {lines[j]}"
+                      for j in range(start, end)
+                  ))
+                  break
+
+          print(
+              "\nDiagnosis only: no source changes made. "
+              "Use this output to prepare a safe patch."
+          )
+          PY
 
       - name: Fix floating-point in DSI panel driver
         shell: bash
