@@ -3,108 +3,55 @@ name: Audit UBports Sweet Source
 on:
   workflow_dispatch:
   push:
+    branches:
+      - main
     paths:
-      - ".github/workflows/audit-ubports-sweet.yml"
+      - ".github/workflows/**"
+      - "README.md"
+      - "kernel/**"
+      - "device/**"
+      - "vendor/**"
 
 permissions:
   contents: read
 
 jobs:
   audit:
-    name: Audit source kernel dan konfigurasi
+    name: Audit source kernel
     runs-on: ubuntu-22.04
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
-          fetch-depth: 1
+          persist-credentials: false
 
       - name: Periksa struktur source
         shell: bash
         run: |
-          set -uo pipefail
+          set -euo pipefail
 
-          echo "===================================="
-          echo " AUDIT UBPORTS - REDMI NOTE 10 PRO"
-          echo " Codename: sweet"
-          echo "===================================="
+          echo "=== UBports Sweet Source Audit ==="
+          echo "Commit: $(git rev-parse --short HEAD)"
 
-          echo
-          echo "=== Commit yang diperiksa ==="
-          git log -1 --oneline || true
-
-          echo
-          echo "=== Struktur direktori utama ==="
-          for path in \
-            .github/workflows \
-            kernel \
-            device \
-            vendor \
-            arch/arm64/configs
-          do
-            if [ -d "$path" ]; then
-              echo "[ADA] $path"
-            else
-              echo "[TIDAK ADA] $path"
-            fi
-          done
-
-          echo
-          echo "=== Informasi versi kernel ==="
-          if [ -f Makefile ]; then
-            grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL|EXTRAVERSION)[[:space:]]*=' \
-              Makefile || true
-          else
-            echo "Makefile root tidak ditemukan"
+          if [ ! -f Makefile ]; then
+            echo "::error::Makefile kernel tidak ditemukan."
+            echo "Repository ini belum berisi root source kernel."
+            exit 1
           fi
 
-          echo
-          echo "=== Kandidat konfigurasi sweet ==="
-          find . -type f \
-            \( -iname '*sweet*defconfig' \
-               -o -iname '*sweet*config' \) \
-            -not -path './.git/*' \
-            -print 2>/dev/null | head -100 || true
+          if [ ! -d arch/arm64/configs ]; then
+            echo "::error::Konfigurasi ARM64 tidak ditemukan."
+            exit 1
+          fi
 
-          echo
-          echo "=== Pemeriksaan driver display ==="
-          find . -type f \
-            \( -name 'dsi_panel.c' \
-               -o -name 'Makefile' \) \
-            -path '*/drivers/gpu/drm/msm/*' \
-            -not -path '*/.git/*' \
-            -print 2>/dev/null | head -100 || true
+          echo "=== Versi kernel ==="
+          grep -E \
+            '^(VERSION|PATCHLEVEL|SUBLEVEL|EXTRAVERSION)[[:space:]]*=' \
+            Makefile || true
 
-          echo
-          echo "=== Pemeriksaan file kernel utama ==="
-          for path in \
-            Makefile \
-            Kconfig \
-            arch/arm64/Makefile \
-            arch/arm64/configs \
-            include/configs
-          do
-            if [ -e "$path" ]; then
-              echo "[ADA] $path"
-            else
-              echo "[PERLU DIPERIKSA] $path"
-            fi
-          done
+          echo "=== Kandidat defconfig sweet ==="
+          find arch/arm64/configs -type f \
+            -iname '*sweet*defconfig' -print
 
-          echo
-          echo "=== Kandidat file boot dan packaging ==="
-          find . -maxdepth 4 -type f \
-            \( -name 'AnyKernel3' \
-               -o -name 'Image.gz-dtb' \
-               -o -name 'boot.img' \
-               -o -name 'mkbootimg' \
-               -o -name 'BoardConfig.mk' \
-               -o -name 'Android.mk' \
-               -o -name 'Android.bp' \) \
-            -not -path './.git/*' \
-            -print 2>/dev/null | head -100 || true
-
-          echo
           echo "=== Audit selesai ==="
-          echo "Periksa log untuk menentukan langkah perbaikan."
