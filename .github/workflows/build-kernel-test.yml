@@ -21,61 +21,61 @@ jobs:
           path: kernel
           persist-credentials: false
 
-
-
       - name: Inspect Micrel PHY source
         shell: bash
         run: |
           set -euxo pipefail
+
           echo "=== Micrel source around failing function ==="
-          sed -n '680,750p' kernel/drivers/net/phy/micrel.c
+          grep -n -A 35 -B 10 'kszphy_get_strings' \
+            kernel/drivers/net/phy/micrel.c
 
       - name: Diagnose Micrel memcpy overflow
         shell: bash
         run: |
-          set -euxo pipefail
+          set -euo pipefail
+
           python3 - <<'PY'
           from pathlib import Path
 
           p = Path("kernel/drivers/net/phy/micrel.c")
           s = p.read_text()
-          marker = "kszphy_get_strings"
 
+          marker = "kszphy_get_strings"
           if s.count(marker) != 1:
               raise SystemExit(
-                  "ERROR: Function marker not unique; "
-                  "source was not modified."
+                  "ERROR: Target code not found exactly once. "
+                  "No changes made."
               )
 
           lines = s.splitlines()
           for i, line in enumerate(lines):
               if marker in line:
-                  start = max(0, i - 5)
-                  end = min(len(lines), i + 35)
-                  print("\n".join(
-                      f"{j + 1}: {lines[j]}"
-                      for j in range(start, end)
-                  ))
+                  start = max(0, i - 10)
+                  end = min(len(lines), i + 40)
+                  print("=== Relevant source ===")
+                  for j in range(start, end):
+                      print(f"{j + 1}: {lines[j]}")
                   break
 
-          print(
-              "\nDiagnosis only: no source changes made. "
-              "Use this output to prepare a safe patch."
-          )
+          print("Diagnosis complete. Source was not modified.")
           PY
 
       - name: Fix floating-point in DSI panel driver
         shell: bash
         run: |
-          set -euxo pipefail
+          set -euo pipefail
+
           python3 - <<'PY'
           from pathlib import Path
 
-          p = Path("kernel/drivers/gpu/drm/msm/dsi-staging/dsi_panel.c")
+          p = Path(
+              "kernel/drivers/gpu/drm/msm/dsi-staging/dsi_panel.c"
+          )
           s = p.read_text()
 
           old_decl = "float mDCBLCoeff[2] = {0.5125, 4.9};"
-          new_decl = "/* Use integer arithmetic in kernel context. */"
+          new_decl = "/* Integer arithmetic replaces floating point. */"
 
           old_expr = (
               "crcValue = 0.5 + mDCBLCoeff[0] * bl_lvl "
@@ -88,17 +88,17 @@ jobs:
 
           if s.count(old_decl) != 1 or s.count(old_expr) != 1:
               raise SystemExit(
-                  "ERROR: Source does not match expected code; "
-                  "no patch applied."
+                  "ERROR: DSI source does not match expected code. "
+                  "No patch applied."
               )
 
           s = s.replace(old_decl, new_decl, 1)
           s = s.replace(old_expr, new_expr, 1)
           p.write_text(s)
 
-          print("Patched DSI panel floating-point calculation.")
-     
+          print("DSI patch applied successfully.")
           PY
+
       - name: Install dependencies
         shell: bash
         run: |
@@ -116,12 +116,13 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
+
           cd kernel
 
           echo "=== Kernel version ==="
           make kernelversion
 
-          echo "=== Available Sweet defconfigs ==="
+          echo "=== Sweet defconfigs ==="
           find arch/arm64/configs \
             -type f -iname '*sweet*' -print
 
@@ -157,6 +158,7 @@ jobs:
           echo "Kernel source: $(pwd)"
           echo "Output: $GITHUB_WORKSPACE/out"
 
+          set +e
           make -j2 O="$GITHUB_WORKSPACE/out" \
             ARCH=arm64 \
             CC=aarch64-linux-gnu-gcc \
