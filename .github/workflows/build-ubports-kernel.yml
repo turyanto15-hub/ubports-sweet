@@ -211,7 +211,20 @@ jobs:
 
           echo "PASS: Image.gz generated"
           ls -lh "$IMAGE"
-
+      - name: Build kernel
+        run: |
+          set -o pipefail
+          make -j2 O=out ARCH=arm64 \
+            CROSS_COMPILE="$CROSS_COMPILE" \
+            2>&1 | tee build.log
+      - name: Show build errors
+        if: always()
+        run: |
+          if [ -f build.log ]; then
+            grep -n -B 8 -A 5 -E \
+              'error:|fatal error:|undefined reference|Error [0-9]|warning:' \
+              build.log | tail -n 150 || true
+          fi
       - name: Collect build results
         if: always()
         shell: bash
