@@ -85,3 +85,50 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+      - name: Validate Halium 11 source branches
+        shell: bash
+        run: |
+          set -uo pipefail
+
+          mkdir -p reports
+
+          check_branch() {
+            local name="$1"
+            local url="$2"
+            local branch="$3"
+
+            echo "Checking $name [$branch]"
+
+            if git ls-remote --exit-code --heads \
+              "$url" "refs/heads/$branch" \
+              > "reports/${name}.txt"; then
+              cat "reports/${name}.txt"
+              echo "RESULT=FOUND"
+            else
+              echo "RESULT=MISSING" \
+                | tee "reports/${name}.txt"
+            fi
+          }
+
+          check_branch device-sweet \
+            https://github.com/xiaomi-sm6150/android_device_xiaomi_sweet.git \
+            lineage-18.1
+
+          check_branch kernel \
+            https://github.com/xiaomi-sm6150/android_kernel_xiaomi_sm6150.git \
+            lineage-18.1
+
+          check_branch device-common \
+            https://github.com/xiaomi-sm6150/android_device_xiaomi_sm6150-common.git \
+            lineage-18.1
+
+          check_branch vendor-sweet \
+            https://github.com/xiaomi-sm6150/proprietary_vendor_xiaomi_sweet.git \
+            lineage-18.1
+
+          check_branch vendor-common \
+            https://github.com/xiaomi-sm6150/proprietary_vendor_xiaomi_sm6150-common.git \
+            lineage-18.1
+
+          echo "Reports saved i
+          n reports/"
