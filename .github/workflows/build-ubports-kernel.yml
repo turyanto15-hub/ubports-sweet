@@ -1,4 +1,3 @@
-
 name: Build UBports Kernel - sweet
 
 on:
@@ -18,7 +17,6 @@ jobs:
       SUBARCH: arm64
       KERNEL_DIR: kernel
       OUT_DIR: out
-      CLANG_TRIPLE: aarch64-linux-gnu-
       CROSS_COMPILE: aarch64-linux-gnu-
       CROSS_COMPILE_ARM32: arm-linux-gnueabi-
 
@@ -27,13 +25,14 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-
           sudo apt-get update
           sudo apt-get install -y \
             git make bc bison flex \
-            build-essential clang lld llvm \
+            build-essential gcc-11 g++-11 \
             gcc-aarch64-linux-gnu \
             gcc-arm-linux-gnueabi \
+            binutils-aarch64-linux-gnu \
+            binutils-arm-linux-gnueabi \
             libssl-dev libelf-dev libncurses-dev \
             python3 perl rsync pahole
 
@@ -55,46 +54,45 @@ jobs:
           echo "=== Kernel version ==="
           make kernelversion
 
-          echo "=== Verify defconfig ==="
-          test -f arch/arm64/configs/vendor/sweet_user_defconfig
-
-          echo "=== Verify kernel files ==="
           test -f Makefile
           test -f scripts/config
+          test -f arch/arm64/configs/vendor/sweet_user_defconfig
 
-      - name: Select and test compiler
+      - name: Select and test GCC cross compiler
         shell: bash
         run: |
           set -euxo pipefail
 
-          CLANG="$(command -v clang)"
-          LLD="$(command -v ld.lld)"
+          CC=/usr/bin/aarch64-linux-gnu-gcc
+          HOSTCC=/usr/bin/gcc-11
 
-          echo "=== Clang version ==="
-          "$CLANG" --version
+          test -x "$CC"
+          test -x "$HOSTCC"
 
-          echo "=== LLD version ==="
-          "$LLD" --version
+          echo "=== Target compiler ==="
+          "$CC" --version
 
-          echo "=== Compiler stack protector test ==="
+          echo "=== Host compiler ==="
+          "$HOSTCC" --version
+
+          echo "=== Target architecture ==="
+          "$CC" -dumpmachine
+
           printf 'int test(void) { char b[16]; b[0]=0; return b[0]; }\n' \
             > "$RUNNER_TEMP/compiler-test.c"
 
-          "$CLANG" \
-            --target=aarch64-linux-gnu \
+          "$CC" \
             -fstack-protector-strong \
             -Werror \
             -c "$RUNNER_TEMP/compiler-test.c" \
             -o "$RUNNER_TEMP/compiler-test.o"
 
-          echo "PASS: Clang supports -fstack-protector-strong"
-
-          echo "=== Verify compiler target ==="
-          "$CLANG" --target=aarch64-linux-gnu -dumpmachine
+          echo "PASS: GCC supports stack protector"
 
           {
-            echo "CLANG=$CLANG"
-            echo "LLD=$LLD"
+            echo "CC=$CC"
+            echo "HOSTCC=$HOSTCC"
+            echo "LD=/usr/bin/aarch64-linux-gnu-ld"
           } >> "$GITHUB_ENV"
 
       - name: Configure kernel
@@ -107,23 +105,22 @@ jobs:
 
           make O="$GITHUB_WORKSPACE/$OUT_DIR" \
             ARCH=arm64 \
-            CC="$CLANG" \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            LD="$LLD" \
+            CC="$CC" \
+            HOSTCC="$HOSTCC" \
+            CROSS_COMPILE="$CROSS_COMPILE" \
+            CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
+            LD="$LD" \
             vendor/sweet_user_defconfig \
             2>&1 | tee "$GITHUB_WORKSPACE/config.log"
 
           CONFIG="$GITHUB_WORKSPACE/$OUT_DIR/.config"
           test -s "$CONFIG"
 
-          echo "=== Initial compiler/security configuration ==="
+          echo "=== Initial security configuration ==="
           grep -E \
-            'CONFIG_(CC_STACKPROTECTOR|CFI|LTO_CLANG)' \
+            'CONFIG_CC_STACKPROTECTOR|CONFIG_CFI|CONFIG_LTO_CLANG' \
             "$CONFIG" || true
 
-          echo "=== Enable required namespace options ==="
           scripts/config --file "$CONFIG" \
             --enable NAMESPACES \
             --enable DEVTMPFS \
@@ -138,15 +135,15 @@ jobs:
 
           make O="$GITHUB_WORKSPACE/$OUT_DIR" \
             ARCH=arm64 \
-            CC="$CLANG" \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            LD="$LLD" \
+            CC="$CC" \
+            HOSTCC="$HOSTCC" \
+            CROSS_COMPILE="$CROSS_COMPILE" \
+            CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
+            LD="$LD" \
             olddefconfig \
             2>&1 | tee "$GITHUB_WORKSPACE/olddefconfig.log"
 
-          echo "=== Verify required configuration ==="
+          echo "=== Verify required options ==="
 
           for option in \
             CONFIG_NAMESPACES \
@@ -164,61 +161,13 @@ jobs:
               echo "ERROR: $option is not enabled"
               exit 1
             fi
-
             echo "PASS: ${option}=y"
           done
 
-          echo "=== Final compiler/security configuration ==="
+          echo "=== Final security configuration ==="
           grep -E \
-            'CONFIG_(CC_STACKPROTECTOR|CFI|LTO_CLANG)' \
+            'CONFIG_CC_STACKPROTECTOR|CONFIG_CFI|CONFIG_LTO_CLANG' \
             "$CONFIG" || true
-
-    
-      - name: Test AArch64 stack protector script
-        shell: bash
-        run: |
-          set -eu
-
-          cd kernel
-
-          SCRIPT="scripts/gcc-aarch64_has-stack-protector.sh"
-
-          echo "=== Locate stack protector scripts ==="
-          find scripts -maxdepth 1 -name '*stack-protector*' -print
-
-          if [ -f "$SCRIPT" ]; then
-            echo "=== Script contents ==="
-            sed -n '1,240p' "$SCRIPT"
-
-            echo "=== Execute script ==="
-            bash "$SCRIPT" /usr/bin/clang
-          else
-            echo "AArch64 stack protector script not found"
-          fi
-
-
-  
- 
-      - name: Inspect stack protector check
-        shell: bash
-        run: |
-          set -eu
-          cd kernel
-
-          echo "=== Locate stack protector scripts ==="
-          find scripts -maxdepth 1 -type f -iname '*stack*protector*' -print
-
-          echo "=== Makefile stack protector logic ==="
-          sed -n '740,765p' Makefile
-          sed -n '1295,1320p' Makefile
-
-          echo "=== Compiler flag test ==="
-          printf 'int test(void) { char b[16]; b[0]=0; return b[0]; }\n' > /tmp/test.c
-          clang -Werror -fstack-protector-strong -c /tmp/test.c -o /tmp/test.o
-          clang --target=aarch64-linux-gnu -Werror -fstack-protector-strong -c /tmp/test.c -o /tmp/test-arm64.o
-
-          echo "=== Find stackp-check definition ==="
-          grep -R -n 'stackp-check' arch scripts Makefile || true
 
       - name: Verify compiler through kernel Makefile
         shell: bash
@@ -230,11 +179,11 @@ jobs:
           make -j2 \
             O="$GITHUB_WORKSPACE/$OUT_DIR" \
             ARCH=arm64 \
-            CC="$CLANG" \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            LD="$LLD" \
+            CC="$CC" \
+            HOSTCC="$HOSTCC" \
+            CROSS_COMPILE="$CROSS_COMPILE" \
+            CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
+            LD="$LD" \
             prepare \
             2>&1 | tee "$GITHUB_WORKSPACE/prepare.log"
 
@@ -248,20 +197,17 @@ jobs:
           make -j2 \
             O="$GITHUB_WORKSPACE/$OUT_DIR" \
             ARCH=arm64 \
-            CC="$CLANG" \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            LD="$LLD" \
+            CC="$CC" \
+            HOSTCC="$HOSTCC" \
+            CROSS_COMPILE="$CROSS_COMPILE" \
+            CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
+            LD="$LD" \
             Image.gz \
             2>&1 | tee "$GITHUB_WORKSPACE/build.log"
 
           IMAGE="$GITHUB_WORKSPACE/$OUT_DIR/arch/arm64/boot/Image.gz"
 
-          if [ ! -s "$IMAGE" ]; then
-            echo "ERROR: Image.gz was not generated"
-            exit 1
-          fi
+          test -s "$IMAGE"
 
           echo "PASS: Image.gz generated"
           ls -lh "$IMAGE"
@@ -280,7 +226,7 @@ jobs:
             prepare.log \
             build.log
           do
-            if [ -f "$GITHUB_WORKSPACE/$file" ]; then
+            if [ -s "$GITHUB_WORKSPACE/$file" ]; then
               cp "$GITHUB_WORKSPACE/$file" artifacts/
             fi
           done
@@ -302,7 +248,6 @@ jobs:
               > artifacts/source-commit.txt
           fi
 
-          echo "=== Collected artifacts ==="
           ls -lh artifacts || true
 
       - name: Upload build artifacts
