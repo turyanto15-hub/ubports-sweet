@@ -1,5 +1,5 @@
 
-name: Sweet Kernel Build Test
+name: Sweet Kernel Build Diagnostic
 
 on:
   workflow_dispatch:
@@ -25,6 +25,7 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
+
           sudo apt-get update
           sudo apt-get install -y \
             bc bison build-essential flex \
@@ -33,24 +34,31 @@ jobs:
             binutils-aarch64-linux-gnu \
             python3
 
-      - name: Verify source and compiler
+      - name: Verify kernel source
         shell: bash
         run: |
           set -euxo pipefail
           cd kernel
 
+          echo "=== Kernel version ==="
           make kernelversion
+
+          echo "=== Available Sweet defconfigs ==="
+          find arch/arm64/configs \
+            -type f -iname '*sweet*' -print
+
+          echo "=== Compiler version ==="
           aarch64-linux-gnu-gcc --version
 
           test -f arch/arm64/configs/vendor/sweet_user_defconfig
 
-      - name: Generate configuration
+      - name: Generate kernel configuration
         shell: bash
         run: |
           set -euxo pipefail
-          cd kernel
 
           mkdir -p "$GITHUB_WORKSPACE/out"
+          cd kernel
 
           make O="$GITHUB_WORKSPACE/out" \
             ARCH=arm64 \
@@ -60,39 +68,63 @@ jobs:
 
           test -s "$GITHUB_WORKSPACE/out/.config"
 
-      - name: Compile kernel
+      - name: Compile kernel with full diagnostic log
         shell: bash
         run: |
-          set -euxo pipefail
+          set -uo pipefail
+
           cd kernel
+
+          echo "=== Starting kernel build ==="
+          echo "Kernel source: $(pwd)"
+          echo "Output: $GITHUB_WORKSPACE/out"
 
           make -j2 O="$GITHUB_WORKSPACE/out" \
             ARCH=arm64 \
             CC=aarch64-linux-gnu-gcc \
             CROSS_COMPILE=aarch64-linux-gnu- \
-            Image.gz dtbs
+            Image.gz dtbs 2>&1 |
+            tee "$GITHUB_WORKSPACE/kernel-build.log"
 
-      - name: Verify build outputs
-        if: success()
+          build_status=${PIPESTATUS[0]}
+
+          echo "=== Build exit code: $build_status ==="
+          exit "$build_status"
+
+      - name: Search diagnostic errors
+        if: always()
         shell: bash
         run: |
-          set -euxo pipefail
+          echo "=== Error and failure summary ==="
 
-          test -s out/arch/arm64/boot/Image.gz
+          if [ -f "$GITHUB_WORKSPACE/kernel-build.log" ]; then
+            grep -niE \
+              'fatal error:|error:|undefined reference|Error [0-9]+|No such file|FAILED:|ld\.lld: error:' \
+              "$GITHUB_WORKSPACE/kernel-build.log" |
+              tail -n 100 || true
 
-          echo "=== Image.gz ==="
-          ls -lh out/arch/arm64/boot/Image.gz
+            echo "=== Last 150 log lines ==="
+            tail -n 150 "$GITHUB_WORKSPACE/kernel-build.log"
+          else
+            echo "Build log was not created."
+          fi
 
-          echo "=== Device tree files ==="
-          find out/arch/arm64/boot/dts \
-            -type f -name '*.dtb' -print
-
-      - name: Upload build outputs
+      - name: Upload diagnostic log
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: sweet-kernel-build-test
+          name: sweet-kernel-diagnostic-log
+          path: kernel-build.log
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload kernel outputs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sweet-kernel-build-outputs
           path: |
             out/arch/arm64/boot/Image.gz
             out/arch/arm64/boot/dts/**/*.dtb
           if-no-files-found: warn
+          retention-days: 7
