@@ -1,0 +1,89 @@
+
+name: Sweet Kernel Build Test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-kernel:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout kernel source
+        uses: actions/checkout@v4
+        with:
+          repository: techyminati/android_kernel_xiaomi_sweet
+          ref: android-11.0
+          path: kernel
+          persist-credentials: false
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison build-essential flex \
+            libssl-dev libelf-dev libncurses-dev \
+            clang-11 lld-11 \
+            gcc-aarch64-linux-gnu \
+            python3
+
+      - name: Verify source and toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd kernel
+
+          echo "=== Kernel version ==="
+          make kernelversion
+
+          echo "=== Compiler ==="
+          clang-11 --version
+          ld.lld-11 --version
+
+          test -f arch/arm64/configs/vendor/sweet_user_defconfig
+
+      - name: Generate kernel configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd kernel
+
+          mkdir -p "$GITHUB_WORKSPACE/out"
+
+          make O="$GITHUB_WORKSPACE/out" \
+            ARCH=arm64 \
+            CC=clang-11 \
+            LD=ld.lld-11 \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            vendor/sweet_user_defconfig
+
+          test -s "$GITHUB_WORKSPACE/out/.config"
+
+      - name: Compile kernel image
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd kernel
+
+          make -j2 O="$GITHUB_WORKSPACE/out" \
+            ARCH=arm64 \
+            CC=clang-11 \
+            LD=ld.lld-11 \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            Image.gz dtbs
+
+      - name: Upload build outputs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sweet-kernel-build-test
+          path: |
+            out/arch/arm64/boot/Image.gz
+            out/arch/arm64/boot/dts/**/*.dtb
+          if-no-files-found: warn
