@@ -1,3 +1,49 @@
+
+      - name: Checkout kernel source
+        uses: actions/checkout@v4
+        with:
+          repository: techyminati/android_kernel_xiaomi_sweet
+          ref: android-11.0
+          path: kernel
+          persist-credentials: false
+
+      - name: Verify kernel source
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -d kernel/.git || {
+            echo "::error::Kernel repository was not cloned"
+            exit 1
+          }
+
+          cd kernel
+
+          echo "Kernel repository:"
+          git remote get-url origin
+
+          echo "Kernel commit:"
+          git rev-parse HEAD
+
+          echo "Kernel branch/ref:"
+          git status --short --branch
+
+          CONFIG="arch/arm64/configs/vendor/sweet_user_defconfig"
+          PANEL="drivers/gpu/drm/msm/dsi-staging/dsi_panel.c"
+
+          test -f "$CONFIG" || {
+            echo "::error::Missing defconfig: $CONFIG"
+            exit 1
+          }
+
+          test -f "$PANEL" || {
+            echo "::error::Missing DSI panel source: $PANEL"
+            echo "Inspect the kernel tree before applying any patch."
+            exit 1
+          }
+
+          echo "Defconfig and DSI source
+          verified."
 name: Patch DSI Panel - UBports Sweet
 
 on:
