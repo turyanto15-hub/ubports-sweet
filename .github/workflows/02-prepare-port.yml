@@ -1,0 +1,78 @@
+
+name: "02 - Prepare Sweet Port"
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    name: Validate Halium 11 prerequisites
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y git
+
+      - name: Check compatible source branches
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          DEVICE="https://github.com/xiaomi-sm6150/android_device_xiaomi_sweet.git"
+          KERNEL="https://github.com/xiaomi-sm6150/android_kernel_xiaomi_sm6150.git"
+          COMMON="https://github.com/xiaomi-sm6150/android_device_xiaomi_sm6150-common.git"
+          VENDOR="https://github.com/xiaomi-sm6150/proprietary_vendor_xiaomi_sweet.git"
+          VENDOR_COMMON="https://github.com/xiaomi-sm6150/proprietary_vendor_xiaomi_sm6150-common.git"
+
+          mkdir -p reports
+
+          check_branch() {
+            name="$1"
+            url="$2"
+            branch="$3"
+
+            echo "Checking $name: $branch"
+
+            if git ls-remote --exit-code --heads \
+              "$url" "refs/heads/$branch" \
+              > "reports/$name.txt"; then
+              echo "FOUND: $name ($branch)"
+            else
+              echo "MISSING: $name ($branch)"
+              echo "MISSING: $name ($branch)" \
+                >> reports/missing.txt
+            fi
+          }
+
+          check_branch device-sweet "$DEVICE" lineage-18.1
+          check_branch kernel "$KERNEL" lineage-18.1
+          check_branch device-common "$COMMON" lineage-18.1
+          check_branch vendor-sweet "$VENDOR" lineage-18.1
+          check_branch vendor-common "$VENDOR_COMMON" lineage-18.1
+
+          echo ""
+          echo "=== Device dependencies ==="
+
+          git clone --depth 1 --branch lineage-18.1 \
+            "$DEVICE" /tmp/device-sweet
+
+          if [ -f /tmp/device-sweet/lineage.dependencies ]; then
+            cp /tmp/device-sweet/lineage.dependencies \
+              reports/lineage.dependencies
+            cat reports/lineage.dependencies
+          else
+            echo "No lineage.dependencies file found."
+          fi
+
+      - name: Upload source reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sweet-port-preparation
+          path: reports/
+          if-no-files-found: warn
+          re
+tention-days: 7
