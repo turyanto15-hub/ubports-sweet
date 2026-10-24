@@ -61,7 +61,24 @@ jobs:
             CROSS_COMPILE=aarch64-linux-gnu- \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             vendor/sweet_user_defconfig
-
+            echo "=== MODVERSIONS sebelum perubahan ==="
+            grep -E '^CONFIG_MODVERSIONS=|^# CONFIG_MODVERSIONS is not set' \
+            "$GITHUB_WORKSPACE/out/.config" || true
+            scripts/config --file "$GITHUB_WORKSPACE/out/.config" \
+            -d MODVERSIONS
+            
+            make O="$GITHUB_WORKSPACE/out" \
+            ARCH=arm64 \
+            CC=clang-11 \
+            LD=ld.lld-11 \
+            
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            olddefconfig
+            
+            echo "=== MODVERSIONS setelah perubahan ==="
+            grep -E '^CONFIG_MODVERSIONS=|^# CONFIG_MODVERSIONS is not set' \
+            "$GITHUB_WORKSPACE/out/.config" || true
           test -s "$GITHUB_WORKSPACE/out/.config"
 
       - name: Compile kernel image
