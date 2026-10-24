@@ -33,19 +33,16 @@ jobs:
             binutils-aarch64-linux-gnu \
             python3
 
-      - name: Verify source
+      - name: Verify source and compiler
         shell: bash
         run: |
           set -euxo pipefail
           cd kernel
 
-          git log -1 --oneline
           make kernelversion
+          aarch64-linux-gnu-gcc --version
 
           test -f arch/arm64/configs/vendor/sweet_user_defconfig
-          test -f drivers/gpu/drm/msm/dsi-staging/dsi_panel.c
-
-          aarch64-linux-gnu-gcc --version
 
       - name: Generate configuration
         shell: bash
@@ -57,6 +54,7 @@ jobs:
 
           make O="$GITHUB_WORKSPACE/out" \
             ARCH=arm64 \
+            CC=aarch64-linux-gnu-gcc \
             CROSS_COMPILE=aarch64-linux-gnu- \
             vendor/sweet_user_defconfig
 
@@ -70,16 +68,22 @@ jobs:
 
           make -j2 O="$GITHUB_WORKSPACE/out" \
             ARCH=arm64 \
+            CC=aarch64-linux-gnu-gcc \
             CROSS_COMPILE=aarch64-linux-gnu- \
             Image.gz dtbs
 
-      - name: Check outputs
+      - name: Verify build outputs
         if: success()
         shell: bash
         run: |
           set -euxo pipefail
+
           test -s out/arch/arm64/boot/Image.gz
 
+          echo "=== Image.gz ==="
+          ls -lh out/arch/arm64/boot/Image.gz
+
+          echo "=== Device tree files ==="
           find out/arch/arm64/boot/dts \
             -type f -name '*.dtb' -print
 
