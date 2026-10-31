@@ -19,23 +19,28 @@ jobs:
 
     env:
       ARCH: arm64
-      KERNEL_REPO: LineageOS/android_kernel_xiaomi_sm6150
+      KERNEL_REPO: turyanto15-hub/android_kernel_xiaomi_sm6150
       KERNEL_BRANCH: lineage-20
       CLANG_DIR: /tmp/toolchains/clang
-      GCC_DIR: /tmp/toolchains/gcc
+      JOBS: 2
 
     steps:
+      # 1. Checkout source kernel dari fork milik sendiri
       - name: Checkout kernel source
         uses: actions/checkout@v4
         with:
-          repository: LineageOS/android_kernel_xiaomi_sm6150
+          repository: turyanto15-hub/android_kernel_xiaomi_sm6150
           ref: lineage-20
           path: kernel
           fetch-depth: 1
 
+      # 2. Install dependency dan GCC cross compiler
       - name: Install build dependencies
         run: |
+          set -e
+
           sudo apt-get update
+
           sudo apt-get install -y \
             bc \
             bison \
@@ -43,6 +48,7 @@ jobs:
             cpio \
             curl \
             flex \
+            gcc-aarch64-linux-gnu \
             git \
             libelf-dev \
             libssl-dev \
@@ -54,7 +60,11 @@ jobs:
             zip \
             device-tree-compiler
 
-            - name: Download Clang r383902
+          echo "===== GCC VERSION ====="
+          aarch64-linux-gnu-gcc --version | head -1
+
+      # 3. Download Clang r383902
+      - name: Download Clang r383902
         run: |
           set -e
 
@@ -66,51 +76,68 @@ jobs:
 
           tar -xzf "$RUNNER_TEMP/clang.tar.gz" -C "$CLANG_DIR"
 
+          # PATH untuk step sekarang dan step berikutnya
+          export PATH="$CLANG_DIR/bin:$PATH"
           echo "$CLANG_DIR/bin" >> "$GITHUB_PATH"
-          echo "LD_LIBRARY_PATH=$CLANG_DIR/lib64:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+
+          export LD_LIBRARY_PATH="$CLANG_DIR/lib64:${LD_LIBRARY_PATH:-}"
+          echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH" >> "$GITHUB_ENV"
+
+          echo "===== CLANG LOCATION ====="
+          command -v clang
+
+          echo "===== CLANG VERSION ====="
+          clang --version
+
+          echo "===== LLD LOCATION ====="
+          command -v ld.lld
+
+          echo "===== LLD VERSION ====="
+          ld.lld --version
+
+          # Pastikan compiler berasal dari toolchain yang diunduh
+          test "$(command -v clang)" = "$CLANG_DIR/bin/clang"
+          test "$(command -v ld.lld)" = "$CLANG_DIR/bin/ld.lld"
+
+      # 4. Periksa seluruh toolchain
+      - name: Verify build toolchain
+        run: |
+          set -e
 
           echo "===== CLANG ====="
           clang --version
 
-          echo "===== LLD CHECK ====="
-          find "$CLANG_DIR" -type f -name 'ld.lld' -print
-
-          LLD_PATH="$(find "$CLANG_DIR" -type f -name 'ld.lld' -print -quit)"
-
-          if [ -z "$LLD_PATH" ]; then
-            echo "ERROR: ld.lld tidak ditemukan dalam toolchain"
-            exit 1
-          fi
-
-          chmod +x "$LLD_PATH"
-          ln -sf "$LLD_PATH" "$CLANG_DIR/bin/ld.lld"
-
+          echo "===== LLD ====="
           ld.lld --version
 
-      - name: Download Android GCC 4.9
+          echo "===== GCC CROSS COMPILER ====="
+          aarch64-linux-gnu-gcc --version | head -1
+
+          echo "===== GCC BINUTILS ====="
+          aarch64-linux-gnu-ld --version | head -1
+
+          echo "===== DTC ====="
+          dtc --version
+
+      # 5. Periksa identitas source
+      - name: Verify kernel source
+        working-directory: kernel
         run: |
           set -e
 
-          git clone --depth=1 \
-            --branch google \
-            https://github.com/GrowtopiaJaw/aarch64-linux-android-4.9.git \
-            "$GCC_DIR"
+          echo "===== REPOSITORY ====="
+          git remote -v
 
-          GCC_BIN="$GCC_DIR/bin"
+          echo "===== BRANCH ====="
+          git branch --show-current
 
-          test -x "$GCC_BIN/aarch64-linux-android-gcc"
+          echo "===== COMMIT ====="
+          git log -1 --oneline
 
-          for f in "$GCC_BIN"/aarch64-linux-android-*; do
-            [ -e "$f" ] || continue
-            base="${f##*/}"
-            alias="${base/aarch64-linux-android-/aarch64-linux-androidkernel-}"
-            ln -sf "$f" "$GCC_BIN/$alias"
-          done
+          echo "===== KERNEL VERSION ====="
+          make kernelversion
 
-          echo "$GCC_BIN" >> "$GITHUB_PATH"
-
-          aarch64-linux-androidkernel-gcc --version
-
+      # 6. Membuat konfigurasi dasar
       - name: Initialize kernel configuration
         working-directory: kernel
         run: |
@@ -118,12 +145,13 @@ jobs:
 
           make O=out \
             ARCH=arm64 \
-            CROSS_COMPILE=aarch64-linux-androidkernel- \
+            CROSS_COMPILE=aarch64-linux-gnu- \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CC=clang \
             LD=ld.lld \
             vendor/atoll-perf_defconfig
 
+      # 7. Menggabungkan konfigurasi Sweet
       - name: Merge Sweet configuration
         working-directory: kernel/out
         run: |
@@ -134,36 +162,41 @@ jobs:
             .config \
             ../arch/arm64/configs/vendor/sweet.config
 
-      - name: Finalize configuration
+      # 8. Finalisasi konfigurasi
+      - name: Finalize kernel configuration
         working-directory: kernel
         run: |
           set -e
 
           make O=out \
             ARCH=arm64 \
-            CROSS_COMPILE=aarch64-linux-androidkernel- \
+            CROSS_COMPILE=aarch64-linux-gnu- \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CC=clang \
             LD=ld.lld \
             olddefconfig
 
-          echo "===== SWEET CONFIG CHECK ====="
+          echo "===== SWEET CONFIGURATION ====="
 
           grep -E \
-            '^(CONFIG_ARCH_SDMMAGPIE|CONFIG_MACH_XIAOMI_SWEET|CONFIG_NFC_NQ_PN80T|CONFIG_BQ2597X_CHARGE_PUMP)=' \
+            '^(CONFIG_ARCH_QCOM|CONFIG_ARCH_ATOLL|CONFIG_ARCH_SDMMAGPIE|CONFIG_MACH_XIAOMI_SWEET|CONFIG_NFC_NQ_PN80T|CONFIG_BQ2597X_CHARGE_PUMP|CONFIG_LDO_WL2866D|CONFIG_INPUT_FINGERPRINT)=' \
             out/.config
 
+          grep -q '^CONFIG_ARCH_SDMMAGPIE=y' out/.config
           grep -q '^CONFIG_MACH_XIAOMI_SWEET=y' out/.config
 
-      - name: Build Image.gz and Device Trees
+      # 9. Build Image.gz, DTB dan DTBO
+      - name: Build kernel and device trees
         working-directory: kernel
         run: |
-          set -e
-          touch build.log
+          set -euo pipefail
 
-          make -j2 O=out \
+          echo "===== BUILD START ====="
+          echo "JOBS: $JOBS"
+
+          make -j"$JOBS" O=out \
             ARCH=arm64 \
-            CROSS_COMPILE=aarch64-linux-androidkernel- \
+            CROSS_COMPILE=aarch64-linux-gnu- \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CC=clang \
             LD=ld.lld \
@@ -174,25 +207,41 @@ jobs:
             STRIP=llvm-strip \
             Image.gz dtbs 2>&1 | tee build.log
 
+          echo "===== BUILD FINISHED ====="
+
+      # 10. Verifikasi hasil build
       - name: Verify build outputs
         working-directory: kernel
         run: |
           set -e
 
-          echo "===== IMAGE ====="
+          echo "===== IMAGE GZ ====="
+
           test -s out/arch/arm64/boot/Image.gz
           ls -lh out/arch/arm64/boot/Image.gz
 
           echo "===== SWEET DTBO ====="
+
           test -s out/arch/arm64/boot/dts/qcom/sweet-sdmmagpie-overlay.dtbo
           ls -lh out/arch/arm64/boot/dts/qcom/sweet-sdmmagpie-overlay.dtbo
 
-          echo "===== DTB AND DTBO FILES ====="
+          echo "===== GENERATED DTB / DTBO ====="
+
           find out/arch/arm64/boot/dts/qcom \
             -type f \( -name '*.dtb' -o -name '*.dtbo' \) \
             -print
 
-      - name: Upload kernel artifacts and logs
+          DTB_COUNT=$(find out/arch/arm64/boot/dts/qcom -type f -name '*.dtb' | wc -l)
+          DTBO_COUNT=$(find out/arch/arm64/boot/dts/qcom -type f -name '*.dtbo' | wc -l)
+
+          echo "DTB count: $DTB_COUNT"
+          echo "DTBO count: $DTBO_COUNT"
+
+          test "$DTB_COUNT" -gt 0
+          test "$DTBO_COUNT" -gt 0
+
+      # 11. Upload artifact dan log
+      - name: Upload kernel artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
