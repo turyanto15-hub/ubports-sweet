@@ -54,7 +54,7 @@ jobs:
             zip \
             device-tree-compiler
 
-      - name: Download Clang r383902
+            - name: Download Clang r383902
         run: |
           set -e
 
@@ -69,7 +69,22 @@ jobs:
           echo "$CLANG_DIR/bin" >> "$GITHUB_PATH"
           echo "LD_LIBRARY_PATH=$CLANG_DIR/lib64:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
 
+          echo "===== CLANG ====="
           clang --version
+
+          echo "===== LLD CHECK ====="
+          find "$CLANG_DIR" -type f -name 'ld.lld' -print
+
+          LLD_PATH="$(find "$CLANG_DIR" -type f -name 'ld.lld' -print -quit)"
+
+          if [ -z "$LLD_PATH" ]; then
+            echo "ERROR: ld.lld tidak ditemukan dalam toolchain"
+            exit 1
+          fi
+
+          chmod +x "$LLD_PATH"
+          ln -sf "$LLD_PATH" "$CLANG_DIR/bin/ld.lld"
+
           ld.lld --version
 
       - name: Download Android GCC 4.9
