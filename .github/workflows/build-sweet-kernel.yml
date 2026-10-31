@@ -21,8 +21,8 @@ jobs:
       ARCH: arm64
       KERNEL_REPO: LineageOS/android_kernel_xiaomi_sm6150
       KERNEL_BRANCH: lineage-20
-      CLANG_DIR: ${{ runner.temp }}/toolchains/clang
-      GCC_DIR: ${{ runner.temp }}/toolchains/gcc
+      CLANG_DIR: /tmp/toolchains/clang
+      GCC_DIR: /tmp/toolchains/gcc
 
     steps:
       - name: Checkout kernel source
