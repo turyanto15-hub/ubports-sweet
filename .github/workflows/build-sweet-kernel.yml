@@ -1,0 +1,192 @@
+
+name: Sweet Kernel Build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sweet-kernel-build
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build Redmi Note 10 Pro Sweet Kernel
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+
+    env:
+      ARCH: arm64
+      KERNEL_REPO: LineageOS/android_kernel_xiaomi_sm6150
+      KERNEL_BRANCH: lineage-20
+      CLANG_DIR: ${{ runner.temp }}/toolchains/clang
+      GCC_DIR: ${{ runner.temp }}/toolchains/gcc
+
+    steps:
+      - name: Checkout kernel source
+        uses: actions/checkout@v4
+        with:
+          repository: LineageOS/android_kernel_xiaomi_sm6150
+          ref: lineage-20
+          path: kernel
+          fetch-depth: 1
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc \
+            bison \
+            build-essential \
+            cpio \
+            curl \
+            flex \
+            git \
+            libelf-dev \
+            libssl-dev \
+            libncurses-dev \
+            lz4 \
+            python3 \
+            rsync \
+            unzip \
+            zip \
+            device-tree-compiler
+
+      - name: Download Clang r383902
+        run: |
+          set -e
+
+          mkdir -p "$CLANG_DIR"
+
+          curl -fL \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android11-release/clang-r383902.tar.gz" \
+            -o "$RUNNER_TEMP/clang.tar.gz"
+
+          tar -xzf "$RUNNER_TEMP/clang.tar.gz" -C "$CLANG_DIR"
+
+          echo "$CLANG_DIR/bin" >> "$GITHUB_PATH"
+          echo "LD_LIBRARY_PATH=$CLANG_DIR/lib64:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+
+          clang --version
+          ld.lld --version
+
+      - name: Download Android GCC 4.9
+        run: |
+          set -e
+
+          git clone --depth=1 \
+            --branch google \
+            https://github.com/GrowtopiaJaw/aarch64-linux-android-4.9.git \
+            "$GCC_DIR"
+
+          GCC_BIN="$GCC_DIR/bin"
+
+          test -x "$GCC_BIN/aarch64-linux-android-gcc"
+
+          for f in "$GCC_BIN"/aarch64-linux-android-*; do
+            [ -e "$f" ] || continue
+            base="${f##*/}"
+            alias="${base/aarch64-linux-android-/aarch64-linux-androidkernel-}"
+            ln -sf "$f" "$GCC_BIN/$alias"
+          done
+
+          echo "$GCC_BIN" >> "$GITHUB_PATH"
+
+          aarch64-linux-androidkernel-gcc --version
+
+      - name: Initialize kernel configuration
+        working-directory: kernel
+        run: |
+          set -e
+
+          make O=out \
+            ARCH=arm64 \
+            CROSS_COMPILE=aarch64-linux-androidkernel- \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CC=clang \
+            LD=ld.lld \
+            vendor/atoll-perf_defconfig
+
+      - name: Merge Sweet configuration
+        working-directory: kernel/out
+        run: |
+          set -e
+
+          bash ../scripts/kconfig/merge_config.sh \
+            -m \
+            .config \
+            ../arch/arm64/configs/vendor/sweet.config
+
+      - name: Finalize configuration
+        working-directory: kernel
+        run: |
+          set -e
+
+          make O=out \
+            ARCH=arm64 \
+            CROSS_COMPILE=aarch64-linux-androidkernel- \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CC=clang \
+            LD=ld.lld \
+            olddefconfig
+
+          echo "===== SWEET CONFIG CHECK ====="
+
+          grep -E \
+            '^(CONFIG_ARCH_SDMMAGPIE|CONFIG_MACH_XIAOMI_SWEET|CONFIG_NFC_NQ_PN80T|CONFIG_BQ2597X_CHARGE_PUMP)=' \
+            out/.config
+
+          grep -q '^CONFIG_MACH_XIAOMI_SWEET=y' out/.config
+
+      - name: Build Image.gz and Device Trees
+        working-directory: kernel
+        run: |
+          set -e
+          touch build.log
+
+          make -j2 O=out \
+            ARCH=arm64 \
+            CROSS_COMPILE=aarch64-linux-androidkernel- \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CC=clang \
+            LD=ld.lld \
+            AR=llvm-ar \
+            NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip \
+            Image.gz dtbs 2>&1 | tee build.log
+
+      - name: Verify build outputs
+        working-directory: kernel
+        run: |
+          set -e
+
+          echo "===== IMAGE ====="
+          test -s out/arch/arm64/boot/Image.gz
+          ls -lh out/arch/arm64/boot/Image.gz
+
+          echo "===== SWEET DTBO ====="
+          test -s out/arch/arm64/boot/dts/qcom/sweet-sdmmagpie-overlay.dtbo
+          ls -lh out/arch/arm64/boot/dts/qcom/sweet-sdmmagpie-overlay.dtbo
+
+          echo "===== DTB AND DTBO FILES ====="
+          find out/arch/arm64/boot/dts/qcom \
+            -type f \( -name '*.dtb' -o -name '*.dtbo' \) \
+            -print
+
+      - name: Upload kernel artifacts and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sweet-kernel-build
+          if-no-files-found: warn
+          path: |
+            kernel/build.log
+            kernel/out/.config
+            kernel/out/System.map
+            kernel/out/arch/arm64/boot/Image.gz
+            kernel/out/arch/arm64/boot/dts/qcom/*.dtb
+            kernel/out/arch/arm64/boot/dts/qcom/*.dtbo
