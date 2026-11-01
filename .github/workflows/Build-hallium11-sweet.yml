@@ -1,3 +1,4 @@
+
 name: Sweet - Halium 11 Kernel and Boot Build
 
 on:
@@ -30,8 +31,8 @@ jobs:
             cpio \
             curl \
             device-tree-compiler \
-            flex \
             fakeroot \
+            flex \
             git \
             gperf \
             libelf-dev \
@@ -65,24 +66,15 @@ jobs:
           pwd
           ls -lah
 
-          echo
           echo "===== BUILD SCRIPT ====="
           test -f build.sh || {
-            echo "ERROR: build.sh tidak ditemukan di root port"
+            echo "ERROR: build.sh tidak ditemukan"
             exit 1
           }
 
           chmod +x build.sh
           sed -n '1,80p' build.sh
-      - name: Install mkbootimg
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y android-sdk-libsparse-utils android-sdk-platform-tools
-          command -v mkbootimg || true
-      - name: Run Halium 11 build
-        run: |
-          cd port
-          ./build.sh
+
       - name: Configure deviceinfo
         run: |
           cd port
@@ -126,13 +118,43 @@ jobs:
           echo "===== DEVICEINFO ====="
           cat deviceinfo
 
-      - name: Prepare output directory
+      - name: Install AOSP mkbootimg
         run: |
+          echo "===== CLONE LINEAGEOS MKBOOTIMG ====="
+
+          git clone --depth=1 \
+            --branch lineage-19.1 \
+            https://github.com/LineageOS/android_system_tools_mkbootimg.git \
+            "$RUNNER_TEMP/android-mkbootimg"
+
+          test -s "$RUNNER_TEMP/android-mkbootimg/mkbootimg.py"
+
+          echo "===== CREATE MKBOOTIMG COMMAND ====="
+
+          sudo tee /usr/local/bin/mkbootimg >/dev/null <<EOF
+          #!/usr/bin/env bash
+          exec python3 "${RUNNER_TEMP}/android-mkbootimg/mkbootimg.py" "\$@"
+          EOF
+
+          sudo chmod +x /usr/local/bin/mkbootimg
+
+          echo "===== VERIFY MKBOOTIMG ====="
+          command -v mkbootimg
+          mkbootimg --help >/dev/null
+          echo "mkbootimg is ready"
+
+      - name: Prepare output directories
+        run: |
+          mkdir -p port/workdir
           mkdir -p port/out
 
       - name: Build kernel, DTB, DTBO and boot image
         run: |
           cd port
+
+          echo "===== CHECK MKBOOTIMG ====="
+          command -v mkbootimg
+          mkbootimg --help >/dev/null
 
           echo "===== START HALIUM 11 BUILD ====="
           ./build.sh -b workdir -o out -k
@@ -143,26 +165,29 @@ jobs:
           cd port
 
           echo "===== BOOT IMAGE ====="
-          ls -lh workdir/tmp/partitions/boot.img
           test -s workdir/tmp/partitions/boot.img
+          ls -lh workdir/tmp/partitions/boot.img
 
-          echo
           echo "===== DTBO IMAGE ====="
-          ls -lh workdir/tmp/partitions/dtbo.img
           test -s workdir/tmp/partitions/dtbo.img
+          ls -lh workdir/tmp/partitions/dtbo.img
 
-          echo
           echo "===== KERNEL IMAGE ====="
+          test -s workdir/downloads/KERNEL_OBJ/arch/arm64/boot/Image.gz
           ls -lh workdir/downloads/KERNEL_OBJ/arch/arm64/boot/Image.gz
 
-          echo
           echo "===== DEVICE TREE ====="
+          test -s workdir/downloads/KERNEL_OBJ/arch/arm64/boot/dts/qcom/sdmmagpie.dtb
+          test -s workdir/downloads/KERNEL_OBJ/arch/arm64/boot/dts/qcom/sweet-sdmmagpie-overlay.dtbo
+
           ls -lh workdir/downloads/KERNEL_OBJ/arch/arm64/boot/dts/qcom/sdmmagpie.dtb
           ls -lh workdir/downloads/KERNEL_OBJ/arch/arm64/boot/dts/qcom/sweet-sdmmagpie-overlay.dtbo
 
-          echo
           echo "===== KERNEL CONFIG ====="
           test -s workdir/downloads/KERNEL_OBJ/.config
+          ls -lh workdir/downloads/KERNEL_OBJ/.config
+
+          echo "===== BUILD OUTPUT VERIFICATION PASSED ====="
 
       - name: Upload build artifacts
         if: always()
