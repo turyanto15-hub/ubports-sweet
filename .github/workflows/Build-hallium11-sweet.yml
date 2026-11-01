@@ -50,7 +50,7 @@ jobs:
 
           sudo ln -sf /usr/bin/python2.7 /usr/local/bin/python2
 
-            - name: Clone Sweet Halium 11 port
+      - name: Clone Sweet Halium 11 port
         run: |
           git clone --depth=1 \
             --branch halium-11.0 \
