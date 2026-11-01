@@ -33,12 +33,18 @@ jobs:
           ref: main
           path: ubports-sweet
 
-      - name: Clone Halium 11 device source
+      - name: Clone Sweet device tree
         run: |
           git clone --depth=1 \
-            -b halium-11.0 \
-            https://github.com/ubports-sweet/xiaomi-sweet.git \
+            https://github.com/turyanto15-hub/android_device_xiaomi_sweet.git \
             device
+
+      - name: Clone Sweet common device tree
+        run: |
+          git clone --depth=1 \
+            https://github.com/turyanto15-hub/android_device_xiaomi_sm6150-common.git \
+            device-common
+
 
       - name: Verify source
         run: |
