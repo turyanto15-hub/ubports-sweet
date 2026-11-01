@@ -1,0 +1,95 @@
+
+name: Halium 11 Kernel and Boot Build - Sweet
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Halium 11 for Redmi Note 10 Pro
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            git curl wget bc bison flex \
+            build-essential zip unzip \
+            python3 python3-pip \
+            libssl-dev libelf-dev \
+            device-tree-compiler \
+            cpio rsync \
+            gcc-aarch64-linux-gnu \
+            g++-aarch64-linux-gnu
+
+      - name: Checkout UBports workflow repository
+        uses: actions/checkout@v4
+        with:
+          repository: turyanto15-hub/ubports-sweet
+          ref: main
+          path: ubports-sweet
+
+      - name: Clone Halium 11 device source
+        run: |
+          git clone --depth=1 \
+            -b halium-11.0 \
+            https://github.com/ubports-sweet/xiaomi-sweet.git \
+            device
+
+      - name: Verify source
+        run: |
+          echo "===== SOURCE ====="
+          ls -lah device
+          echo "===== BUILD SCRIPT ====="
+          find device -maxdepth 3 -name build.sh -print
+          echo "===== DEFCONFIG ====="
+          find device -path '*sweet-perf_defconfig' -print
+
+      - name: Configure Halium kernel
+        run: |
+          cd device
+          export ARCH=arm64
+          export SUBARCH=arm64
+
+          if [ -f build.sh ]; then
+            chmod +x build.sh
+          else
+            echo "ERROR: build.sh not found"
+            exit 1
+          fi
+
+      - name: Build kernel
+        run: |
+          cd device
+
+          ./build.sh -b workdir -o out -k
+
+      - name: Collect kernel and boot outputs
+        if: always()
+        run: |
+          mkdir -p artifacts
+
+          find device -type f \( \
+            -name 'Image.gz' -o \
+            -name 'Image' -o \
+            -name '*.dtb' -o \
+            -name '*.dtbo' -o \
+            -name 'boot.img' -o \
+            -name 'dtbo.img' \
+          \) -exec cp --parents {} artifacts/ \;
+
+          echo "===== BUILD OUTPUTS ====="
+          find artifacts -type f -ls
+
+      - name: Upload Halium 11 artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sweet-halium11-kernel-boot
+          path: artifacts/
+          if-no-files-found: warn
+          retention-days: 7
