@@ -74,7 +74,11 @@ jobs:
 
           chmod +x build.sh
           sed -n '1,80p' build.sh
-
+      - name: Install mkbootimg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y android-sdk-libsparse-utils android-sdk-platform-tools
+          command -v mkbootimg || true
       - name: Run Halium 11 build
         run: |
           cd port
