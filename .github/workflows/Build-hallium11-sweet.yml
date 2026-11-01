@@ -171,7 +171,7 @@ jobs:
           mkbootimg --help >/dev/null
 
           echo "===== START HALIUM 11 BUILD ====="
-          ./build.sh -b workdir -o out -k
+          ./build.sh -b workdir -o out
 
       - name: Verify build outputs
         if: success()
