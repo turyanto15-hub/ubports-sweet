@@ -25,7 +25,7 @@ jobs:
       JOBS: 2
 
     steps:
-      # 1. Checkout source kernel dari fork milik sendiri
+      # 1. Checkout kernel source
       - name: Checkout kernel source
         uses: actions/checkout@v4
         with:
@@ -34,7 +34,7 @@ jobs:
           path: kernel
           fetch-depth: 1
 
-      # 2. Install dependency dan GCC cross compiler
+      # 2. Install dependencies
       - name: Install build dependencies
         run: |
           set -e
@@ -76,12 +76,12 @@ jobs:
 
           tar -xzf "$RUNNER_TEMP/clang.tar.gz" -C "$CLANG_DIR"
 
-          # PATH untuk step sekarang dan step berikutnya
-          export PATH="$CLANG_DIR/bin:$PATH"
           echo "$CLANG_DIR/bin" >> "$GITHUB_PATH"
 
           export LD_LIBRARY_PATH="$CLANG_DIR/lib64:${LD_LIBRARY_PATH:-}"
           echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH" >> "$GITHUB_ENV"
+
+          export PATH="$CLANG_DIR/bin:$PATH"
 
           echo "===== CLANG LOCATION ====="
           command -v clang
@@ -95,11 +95,10 @@ jobs:
           echo "===== LLD VERSION ====="
           ld.lld --version
 
-          # Pastikan compiler berasal dari toolchain yang diunduh
           test "$(command -v clang)" = "$CLANG_DIR/bin/clang"
           test "$(command -v ld.lld)" = "$CLANG_DIR/bin/ld.lld"
 
-      # 4. Periksa seluruh toolchain
+      # 4. Verify toolchain
       - name: Verify build toolchain
         run: |
           set -e
@@ -119,7 +118,7 @@ jobs:
           echo "===== DTC ====="
           dtc --version
 
-      # 5. Periksa identitas source
+      # 5. Verify kernel source
       - name: Verify kernel source
         working-directory: kernel
         run: |
@@ -137,7 +136,7 @@ jobs:
           echo "===== KERNEL VERSION ====="
           make kernelversion
 
-      # 6. Membuat konfigurasi dasar
+      # 6. Initialize base configuration
       - name: Initialize kernel configuration
         working-directory: kernel
         run: |
@@ -151,7 +150,7 @@ jobs:
             LD=ld.lld \
             vendor/atoll-perf_defconfig
 
-      # 7. Menggabungkan konfigurasi Sweet
+      # 7. Merge Sweet configuration
       - name: Merge Sweet configuration
         working-directory: kernel/out
         run: |
@@ -162,11 +161,16 @@ jobs:
             .config \
             ../arch/arm64/configs/vendor/sweet.config
 
-      # 8. Finalisasi konfigurasi
+      # 8. Enable DT overlay and finalize configuration
       - name: Finalize kernel configuration
         working-directory: kernel
         run: |
           set -e
+
+          echo "===== ENABLE DT OVERLAY ====="
+
+          scripts/config --file out/.config \
+            -e BUILD_ARM64_DT_OVERLAY
 
           make O=out \
             ARCH=arm64 \
@@ -176,16 +180,20 @@ jobs:
             LD=ld.lld \
             olddefconfig
 
-          echo "===== SWEET CONFIGURATION ====="
+          echo "===== VERIFY REQUIRED CONFIGURATION ====="
 
           grep -E \
-            '^(CONFIG_ARCH_QCOM|CONFIG_ARCH_ATOLL|CONFIG_ARCH_SDMMAGPIE|CONFIG_MACH_XIAOMI_SWEET|CONFIG_NFC_NQ_PN80T|CONFIG_BQ2597X_CHARGE_PUMP|CONFIG_LDO_WL2866D|CONFIG_INPUT_FINGERPRINT)=' \
+            '^(CONFIG_OF|CONFIG_BUILD_ARM64_DT_OVERLAY|CONFIG_ARCH_QCOM|CONFIG_ARCH_ATOLL|CONFIG_ARCH_SDMMAGPIE|CONFIG_MACH_XIAOMI_SWEET|CONFIG_NFC_NQ_PN80T|CONFIG_BQ2597X_CHARGE_PUMP|CONFIG_LDO_WL2866D|CONFIG_INPUT_FINGERPRINT)=' \
             out/.config
 
-          grep -q '^CONFIG_ARCH_SDMMAGPIE=y' out/.config
-          grep -q '^CONFIG_MACH_XIAOMI_SWEET=y' out/.config
+          grep -q '^CONFIG_OF=y$' out/.config
+          grep -q '^CONFIG_BUILD_ARM64_DT_OVERLAY=y$' out/.config
+          grep -q '^CONFIG_ARCH_SDMMAGPIE=y$' out/.config
+          grep -q '^CONFIG_MACH_XIAOMI_SWEET=y$' out/.config
 
-      # 9. Build Image.gz, DTB dan DTBO
+          echo "===== CONFIGURATION CHECK PASSED ====="
+
+      # 9. Build Image.gz, DTB and DTBO
       - name: Build kernel and device trees
         working-directory: kernel
         run: |
@@ -209,7 +217,7 @@ jobs:
 
           echo "===== BUILD FINISHED ====="
 
-      # 10. Verifikasi hasil build
+      # 10. Verify build outputs
       - name: Verify build outputs
         working-directory: kernel
         run: |
@@ -220,27 +228,34 @@ jobs:
           test -s out/arch/arm64/boot/Image.gz
           ls -lh out/arch/arm64/boot/Image.gz
 
-          echo "===== SWEET DTBO ====="
-
-          test -s out/arch/arm64/boot/dts/qcom/sweet-sdmmagpie-overlay.dtbo
-          ls -lh out/arch/arm64/boot/dts/qcom/sweet-sdmmagpie-overlay.dtbo
-
           echo "===== GENERATED DTB / DTBO ====="
 
           find out/arch/arm64/boot/dts/qcom \
             -type f \( -name '*.dtb' -o -name '*.dtbo' \) \
             -print
 
-          DTB_COUNT=$(find out/arch/arm64/boot/dts/qcom -type f -name '*.dtb' | wc -l)
-          DTBO_COUNT=$(find out/arch/arm64/boot/dts/qcom -type f -name '*.dtbo' | wc -l)
+          DTB_COUNT=$(find out/arch/arm64/boot/dts/qcom \
+            -type f -name '*.dtb' | wc -l)
+
+          DTBO_COUNT=$(find out/arch/arm64/boot/dts/qcom \
+            -type f -name '*.dtbo' | wc -l)
 
           echo "DTB count: $DTB_COUNT"
           echo "DTBO count: $DTBO_COUNT"
 
+          echo "===== SWEET DTBO ====="
+
+          test -s out/arch/arm64/boot/dts/qcom/sweet-sdmmagpie-overlay.dtbo
+
+          ls -lh \
+            out/arch/arm64/boot/dts/qcom/sweet-sdmmagpie-overlay.dtbo
+
           test "$DTB_COUNT" -gt 0
           test "$DTBO_COUNT" -gt 0
 
-      # 11. Upload artifact dan log
+          echo "===== ALL OUTPUT CHECKS PASSED ====="
+
+      # 11. Upload artifacts and logs
       - name: Upload kernel artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -251,6 +266,8 @@ jobs:
             kernel/build.log
             kernel/out/.config
             kernel/out/System.map
+            kernel/out/vmlinux
+            kernel/out/arch/arm64/boot/Image
             kernel/out/arch/arm64/boot/Image.gz
             kernel/out/arch/arm64/boot/dts/qcom/*.dtb
             kernel/out/arch/arm64/boot/dts/qcom/*.dtbo
