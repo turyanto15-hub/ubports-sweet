@@ -1,5 +1,4 @@
-
-name: Halium 11 Kernel and Boot Build - Sweet
+name: Sweet - Halium 11 Kernel and Boot Build
 
 on:
   workflow_dispatch:
@@ -7,95 +6,171 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: sweet-halium11-build
+  cancel-in-progress: true
+
 jobs:
   build:
-    name: Build Halium 11 for Redmi Note 10 Pro
+    name: Build Redmi Note 10 Pro
     runs-on: ubuntu-22.04
+    timeout-minutes: 180
 
     steps:
-      - name: Install dependencies
+      - name: Checkout workflow repository
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            git curl wget bc bison flex \
-            build-essential zip unzip \
-            python3 python3-pip \
-            libssl-dev libelf-dev \
+            bc \
+            bison \
+            build-essential \
+            cpio \
+            curl \
             device-tree-compiler \
-            cpio rsync \
-            gcc-aarch64-linux-gnu \
-            g++-aarch64-linux-gnu
+            flex \
+            fakeroot \
+            git \
+            gperf \
+            libelf-dev \
+            liblz4-tool \
+            libncurses-dev \
+            libssl-dev \
+            lz4 \
+            python2.7 \
+            python3 \
+            rsync \
+            unzip \
+            wget \
+            xz-utils \
+            zip \
+            zstd
 
-      - name: Checkout UBports workflow repository
-        uses: actions/checkout@v4
-        with:
-          repository: turyanto15-hub/ubports-sweet
-          ref: main
-          path: ubports-sweet
+          sudo ln -sf /usr/bin/python2.7 /usr/local/bin/python2
 
-      - name: Clone Sweet device tree
+            - name: Clone Sweet Halium 11 port
         run: |
           git clone --depth=1 \
-            https://github.com/turyanto15-hub/android_device_xiaomi_sweet.git \
-            device
+            --branch halium-11.0 \
+            https://gitlab.com/ubports-sweet/xiaomi-sweet.git \
+            port
 
-      - name: Clone Sweet common device tree
+      - name: Verify port build script
         run: |
-          git clone --depth=1 \
-            https://github.com/turyanto15-hub/android_device_xiaomi_sm6150-common.git \
-            device-common
+          cd port
 
+          echo "===== PORT DIRECTORY ====="
+          pwd
+          ls -lah
 
-      - name: Verify source
-        run: |
-          echo "===== SOURCE ====="
-          ls -lah device
+          echo
           echo "===== BUILD SCRIPT ====="
-          find device -maxdepth 3 -name build.sh -print
-          echo "===== DEFCONFIG ====="
-          find device -path '*sweet-perf_defconfig' -print
-
-      - name: Configure Halium kernel
-        run: |
-          cd device
-          export ARCH=arm64
-          export SUBARCH=arm64
-
-          if [ -f build.sh ]; then
-            chmod +x build.sh
-          else
-            echo "ERROR: build.sh not found"
+          test -f build.sh || {
+            echo "ERROR: build.sh tidak ditemukan di root port"
             exit 1
-          fi
+          }
 
-      - name: Build kernel
+          chmod +x build.sh
+          sed -n '1,80p' build.sh
+
+      - name: Run Halium 11 build
         run: |
-          cd device
+          cd port
+          ./build.sh
+      - name: Configure deviceinfo
+        run: |
+          cd port
 
+          cat > deviceinfo <<'EOF'
+          deviceinfo_name="Xiaomi Redmi Note 10 Pro"
+          deviceinfo_manufacturer="Xiaomi"
+          deviceinfo_codename="sweet"
+          deviceinfo_arch="aarch64"
+
+          deviceinfo_kernel_source="https://gitlab.com/ubports-sweet/kernel-xiaomi-sweet.git"
+          deviceinfo_kernel_source_branch="halium-11.0"
+          deviceinfo_kernel_defconfig="vendor/sweet-perf_defconfig"
+
+          deviceinfo_kernel_cmdline="androidboot.selinux=permissive console=ttyMSM0,115200n8 androidboot.hardware=qcom androidboot.console=ttyMSM0 androidboot.memcg=1 lpm_levels.sleep_disabled=1 video=vfb:640x400,bpp=32,memsize=3072000 msm_rtb.filter=0x237 service_locator.enable=1 swiotlb=1 androidboot.usbcontroller=a600000.dwc3 earlycon=msm_geni_serial,0x880000 loop.max_part=7 console=tty0 androidboot.init_fatal_reboot_target=recovery kpti=off"
+
+          deviceinfo_kernel_clang_compile="true"
+          deviceinfo_kernel_use_dtc_ext="true"
+          deviceinfo_halium_version="11"
+
+          deviceinfo_dtb="qcom/sdmmagpie.dtb"
+          deviceinfo_dtbo="qcom/sweet-sdmmagpie-overlay.dtbo"
+
+          deviceinfo_flash_pagesize="4096"
+          deviceinfo_flash_offset_base="0x00000000"
+          deviceinfo_flash_offset_kernel="0x00008000"
+          deviceinfo_flash_offset_ramdisk="0x01000000"
+          deviceinfo_flash_offset_second="0x00000000"
+          deviceinfo_flash_offset_tags="0x0000100"
+          deviceinfo_flash_offset_dtb="0x01f00000"
+
+          deviceinfo_bootimg_qcdt="false"
+          deviceinfo_bootimg_header_version="2"
+          deviceinfo_bootimg_os_version="11"
+          deviceinfo_bootimg_os_patch_level="2021-10-01"
+          deviceinfo_bootimg_partition_size="134217728"
+          deviceinfo_recovery_partition_size="134217728"
+          deviceinfo_rootfs_image_sector_size="4096"
+          EOF
+
+          echo "===== DEVICEINFO ====="
+          cat deviceinfo
+
+      - name: Prepare output directory
+        run: |
+          mkdir -p port/out
+
+      - name: Build kernel, DTB, DTBO and boot image
+        run: |
+          cd port
+
+          echo "===== START HALIUM 11 BUILD ====="
           ./build.sh -b workdir -o out -k
 
-      - name: Collect kernel and boot outputs
-        if: always()
+      - name: Verify build outputs
+        if: success()
         run: |
-          mkdir -p artifacts
+          cd port
 
-          find device -type f \( \
-            -name 'Image.gz' -o \
-            -name 'Image' -o \
-            -name '*.dtb' -o \
-            -name '*.dtbo' -o \
-            -name 'boot.img' -o \
-            -name 'dtbo.img' \
-          \) -exec cp --parents {} artifacts/ \;
+          echo "===== BOOT IMAGE ====="
+          ls -lh workdir/tmp/partitions/boot.img
+          test -s workdir/tmp/partitions/boot.img
 
-          echo "===== BUILD OUTPUTS ====="
-          find artifacts -type f -ls
+          echo
+          echo "===== DTBO IMAGE ====="
+          ls -lh workdir/tmp/partitions/dtbo.img
+          test -s workdir/tmp/partitions/dtbo.img
 
-      - name: Upload Halium 11 artifacts
+          echo
+          echo "===== KERNEL IMAGE ====="
+          ls -lh workdir/downloads/KERNEL_OBJ/arch/arm64/boot/Image.gz
+
+          echo
+          echo "===== DEVICE TREE ====="
+          ls -lh workdir/downloads/KERNEL_OBJ/arch/arm64/boot/dts/qcom/sdmmagpie.dtb
+          ls -lh workdir/downloads/KERNEL_OBJ/arch/arm64/boot/dts/qcom/sweet-sdmmagpie-overlay.dtbo
+
+          echo
+          echo "===== KERNEL CONFIG ====="
+          test -s workdir/downloads/KERNEL_OBJ/.config
+
+      - name: Upload build artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: sweet-halium11-kernel-boot
-          path: artifacts/
           if-no-files-found: warn
           retention-days: 7
+          path: |
+            port/workdir/tmp/partitions/boot.img
+            port/workdir/tmp/partitions/dtbo.img
+            port/workdir/downloads/KERNEL_OBJ/.config
+            port/workdir/downloads/KERNEL_OBJ/arch/arm64/boot/Image.gz
+            port/workdir/downloads/KERNEL_OBJ/arch/arm64/boot/dts/qcom/sdmmagpie.dtb
+            port/workdir/downloads/KERNEL_OBJ/arch/arm64/boot/dts/qcom/sweet-sdmmagpie-overlay.dtbo
