@@ -40,7 +40,6 @@ jobs:
           set -e
 
           sudo apt-get update
-
           sudo apt-get install -y \
             bc \
             bison \
@@ -75,7 +74,6 @@ jobs:
             -o "$RUNNER_TEMP/clang.tar.gz"
 
           tar -xzf "$RUNNER_TEMP/clang.tar.gz" -C "$CLANG_DIR"
-
           echo "$CLANG_DIR/bin" >> "$GITHUB_PATH"
 
           export LD_LIBRARY_PATH="$CLANG_DIR/lib64:${LD_LIBRARY_PATH:-}"
