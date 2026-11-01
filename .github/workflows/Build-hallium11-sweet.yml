@@ -147,7 +147,21 @@ jobs:
         run: |
           mkdir -p port/workdir
           mkdir -p port/out
+      - name: Inspect Halium build options
+        run: |
+          cd port
+          if [ ! -d build ]; then
+            git clone --depth=1 \
+              --branch halium-11 \
+              https://gitlab.com/ubports/community-ports/halium-generic-adaptation-build-tools.git \
+              build
+          fi
 
+          echo "===== BUILD HELP ====="
+          bash build/build.sh --help || true
+
+          echo "===== BUILD SCRIPT OPTIONS ====="
+          grep -nE 'getopts|case |BUILD_DIR|OUT=|unknown option|while ' build/build.sh || true
       - name: Build kernel, DTB, DTBO and boot image
         run: |
           cd port
