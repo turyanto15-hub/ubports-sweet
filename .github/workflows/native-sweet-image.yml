@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   build-image:
-    name: Build ARM64 Kernel Image
+    name: Build ARM64 Kernel Image and DTB
     runs-on: ubuntu-24.04
     timeout-minutes: 120
 
@@ -35,6 +35,7 @@ jobs:
             libelf-dev \
             libssl-dev \
             libncurses-dev \
+            device-tree-compiler \
             make \
             python3 \
             rsync
@@ -46,12 +47,20 @@ jobs:
             https://github.com/sm7150-mainline/linux.git kernel
 
           cd kernel
+
           echo "===== SOURCE COMMIT ====="
           git rev-parse HEAD
+
           echo "===== KERNEL VERSION ====="
           make kernelversion
 
-      - name: Configure ARM64 baseline
+          echo "===== SWEET DTS CHECK ====="
+          test -s arch/arm64/boot/dts/qcom/sm7150-xiaomi-sweet.dts
+
+          grep -n "sm7150-xiaomi-sweet.dtb" \
+            arch/arm64/boot/dts/qcom/Makefile
+
+      - name: Configure ARM64 kernel
         run: |
           cd kernel
 
@@ -60,37 +69,69 @@ jobs:
 
           make O=out defconfig
 
-          echo "===== CONFIGURATION CHECK ====="
-          grep -E '^CONFIG_ARM64=y|^CONFIG_64BIT=y' out/.config
+          ./scripts/config --file out/.config \
+            --enable ARCH_QCOM \
+            --enable OF
 
-      - name: Build kernel Image
+          make O=out olddefconfig
+
+          echo "===== CONFIGURATION ====="
+          grep -E \
+            '^CONFIG_ARM64=y|^CONFIG_64BIT=y|^CONFIG_ARCH_QCOM=y|^CONFIG_OF=y' \
+            out/.config
+
+      - name: Build kernel Image and Device Trees
         run: |
           cd kernel
 
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
 
-          make O=out -j2 Image
+          make O=out -j2 Image dtbs
 
-      - name: Validate Image
+      - name: Validate Image and sweet DTB
         run: |
-          IMAGE="kernel/out/arch/arm64/boot/Image"
+          cd kernel
 
-          echo "===== IMAGE RESULT ====="
+          IMAGE="out/arch/arm64/boot/Image"
+          DTB="out/arch/arm64/boot/dts/qcom/sm7150-xiaomi-sweet.dtb"
 
-          if [ ! -s "$IMAGE" ]; then
-            echo "ERROR: Kernel Image missing or empty"
-            exit 1
-          fi
+          echo "===== IMAGE CHECK ====="
 
-          ls -lh "$IMAGE"
+          test -s "$IMAGE"
           file "$IMAGE"
           sha256sum "$IMAGE"
 
-      - name: Upload first kernel Image
+          echo "===== SWEET DTB CHECK ====="
+
+          test -s "$DTB"
+          file "$DTB"
+          sha256sum "$DTB"
+
+          echo "===== DTB COMPATIBLE CHECK ====="
+
+          fdtget "$DTB" / compatible
+
+      - name: Prepare Native UBports artifacts
+        run: |
+          mkdir -p dist
+
+          cp kernel/out/arch/arm64/boot/Image \
+            dist/Image
+
+          cp kernel/out/arch/arm64/boot/dts/qcom/sm7150-xiaomi-sweet.dtb \
+            dist/sm7150-xiaomi-sweet.dtb
+
+          echo "===== FINAL ARTIFACTS ====="
+          ls -lh dist/
+
+          echo "===== SHA256 ====="
+          sha256sum dist/*
+
+      - name: Upload Native UBports First Image
         uses: actions/upload-artifact@v4
         with:
-          name: NATIVE-UBPORT-SWEET-First-Image
-          path: kernel/out/arch/arm64/boot/Image
+          name: NATIVE-UBPORT-SWEET-First-Image-DTB
+          path: dist/*
           if-no-files-found: error
           retention-days: 14
