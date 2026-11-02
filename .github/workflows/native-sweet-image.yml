@@ -1,0 +1,96 @@
+
+name: NATIVE UBPORT SWEET - First Kernel Image
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/native-sweet-image.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build-image:
+    name: Build ARM64 Kernel Image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout workflow repository
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc \
+            bison \
+            build-essential \
+            flex \
+            gcc-aarch64-linux-gnu \
+            binutils-aarch64-linux-gnu \
+            libelf-dev \
+            libssl-dev \
+            libncurses-dev \
+            make \
+            python3 \
+            rsync
+
+      - name: Clone SM7150 mainline kernel
+        run: |
+          git clone --depth=1 \
+            --branch v7.2 \
+            https://github.com/sm7150-mainline/linux.git kernel
+
+          cd kernel
+          echo "===== SOURCE COMMIT ====="
+          git rev-parse HEAD
+          echo "===== KERNEL VERSION ====="
+          make kernelversion
+
+      - name: Configure ARM64 baseline
+        run: |
+          cd kernel
+
+          export ARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+
+          make O=out defconfig
+
+          echo "===== CONFIGURATION CHECK ====="
+          grep -E '^CONFIG_ARM64=y|^CONFIG_64BIT=y' out/.config
+
+      - name: Build kernel Image
+        run: |
+          cd kernel
+
+          export ARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+
+          make O=out -j2 Image
+
+      - name: Validate Image
+        run: |
+          IMAGE="kernel/out/arch/arm64/boot/Image"
+
+          echo "===== IMAGE RESULT ====="
+
+          if [ ! -s "$IMAGE" ]; then
+            echo "ERROR: Kernel Image missing or empty"
+            exit 1
+          fi
+
+          ls -lh "$IMAGE"
+          file "$IMAGE"
+          sha256sum "$IMAGE"
+
+      - name: Upload first kernel Image
+        uses: actions/upload-artifact@v4
+        with:
+          name: NATIVE-UBPORT-SWEET-First-Image
+          path: kernel/out/arch/arm64/boot/Image
+          if-no-files-found: error
+          retention-days: 14
