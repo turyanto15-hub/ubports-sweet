@@ -1,5 +1,5 @@
 
-name: NATIVE UBPORT SWEET - First Kernel Image
+name: NATIVE UBPORT SWEET - Kernel Image DTB DTBO Audit
 
 on:
   workflow_dispatch:
@@ -13,18 +13,36 @@ permissions:
   contents: read
 
 jobs:
-  build-image:
-    name: Build ARM64 Kernel Image and DTB
+  build-native-sweet:
+    name: Build Image DTB DTBO and Audit
     runs-on: ubuntu-24.04
     timeout-minutes: 120
 
+    env:
+      ARCH: arm64
+      CROSS_COMPILE: aarch64-linux-gnu-
+      KERNEL_DIR: kernel
+      OUT_DIR: out
+      DEVICE_DTB: sm7150-xiaomi-sweet.dtb
+
     steps:
+      # ==========================================
+      # 1. CHECKOUT
+      # ==========================================
+
       - name: Checkout workflow repository
         uses: actions/checkout@v4
 
+      # ==========================================
+      # 2. DEPENDENCIES
+      # ==========================================
+
       - name: Install build dependencies
         run: |
+          set -e
+
           sudo apt-get update
+
           sudo apt-get install -y \
             bc \
             bison \
@@ -38,13 +56,30 @@ jobs:
             device-tree-compiler \
             make \
             python3 \
-            rsync
+            rsync \
+            git \
+            zip \
+            file \
+            xz-utils
+
+          echo "===== TOOLCHAIN ====="
+          aarch64-linux-gnu-gcc --version
+          dtc --version
+          make --version
+
+      # ==========================================
+      # 3. CLONE KERNEL SOURCE
+      # ==========================================
 
       - name: Clone SM7150 mainline kernel
         run: |
-          git clone --depth=1 \
+          set -euo pipefail
+
+          git clone \
+            --depth=1 \
             --branch v7.2 \
-            https://github.com/sm7150-mainline/linux.git kernel
+            https://github.com/sm7150-mainline/linux.git \
+            kernel
 
           cd kernel
 
@@ -55,17 +90,31 @@ jobs:
           make kernelversion
 
           echo "===== SWEET DTS CHECK ====="
-          test -s arch/arm64/boot/dts/qcom/sm7150-xiaomi-sweet.dts
+
+          test -s \
+            arch/arm64/boot/dts/qcom/sm7150-xiaomi-sweet.dts
 
           grep -n "sm7150-xiaomi-sweet.dtb" \
             arch/arm64/boot/dts/qcom/Makefile
 
+          echo "===== AVAILABLE SWEET DTBO TARGETS ====="
+
+          if grep -nEi 'sweet.*dtbo|dtbo.*sweet' \
+            arch/arm64/boot/dts/qcom/Makefile; then
+            echo "Sweet-specific DTBO target found."
+          else
+            echo "No sweet-specific DTBO target declared."
+          fi
+
+      # ==========================================
+      # 4. CONFIGURATION
+      # ==========================================
+
       - name: Configure ARM64 kernel
         run: |
-          cd kernel
+          set -euo pipefail
 
-          export ARCH=arm64
-          export CROSS_COMPILE=aarch64-linux-gnu-
+          cd kernel
 
           make O=out defconfig
 
@@ -75,63 +124,318 @@ jobs:
 
           make O=out olddefconfig
 
-          echo "===== CONFIGURATION ====="
+          echo "===== CONFIGURATION AUDIT ====="
+
           grep -E \
-            '^CONFIG_ARM64=y|^CONFIG_64BIT=y|^CONFIG_ARCH_QCOM=y|^CONFIG_OF=y' \
-            out/.config
+            '^CONFIG_ARM64=y|^CONFIG_64BIT=y|^CONFIG_ARCH_QCOM=y|^CONFIG_OF=y|^CONFIG_OF_OVERLAY=y' \
+            out/.config || true
 
-      - name: Build kernel Image and Device Trees
+          echo "===== CONFIG FILE ====="
+          test -s out/.config
+
+      # ==========================================
+      # 5. BUILD IMAGE + DTB + DTBO
+      # ==========================================
+
+      - name: Build Kernel Image and Device Trees
         run: |
+          set -euo pipefail
+
+          mkdir -p build-logs
+
           cd kernel
 
-          export ARCH=arm64
-          export CROSS_COMPILE=aarch64-linux-gnu-
+          echo "===== BUILD START ====="
+          date -u
 
-          make O=out -j2 Image dtbs
+          make O=out -j2 Image dtbs \
+            2>&1 | tee ../build-logs/kernel-build.log
 
-      - name: Validate Image and sweet DTB
+          echo "===== BUILD FINISHED ====="
+          date -u
+
+      # ==========================================
+      # 6. VALIDATE IMAGE
+      # ==========================================
+
+      - name: Validate Kernel Image
         run: |
-          cd kernel
+          set -euo pipefail
 
-          IMAGE="out/arch/arm64/boot/Image"
-          DTB="out/arch/arm64/boot/dts/qcom/sm7150-xiaomi-sweet.dtb"
+          IMAGE="kernel/out/arch/arm64/boot/Image"
 
-          echo "===== IMAGE CHECK ====="
+          echo "===== IMAGE AUDIT ====="
 
           test -s "$IMAGE"
+
           file "$IMAGE"
+          ls -lh "$IMAGE"
+
+          echo "===== IMAGE SHA256 ====="
           sha256sum "$IMAGE"
 
-          echo "===== SWEET DTB CHECK ====="
+      # ==========================================
+      # 7. VALIDATE SWEET DTB
+      # ==========================================
+
+      - name: Validate Sweet DTB
+        run: |
+          set -euo pipefail
+
+          DTB="kernel/out/arch/arm64/boot/dts/qcom/${DEVICE_DTB}"
+
+          echo "===== SWEET DTB AUDIT ====="
 
           test -s "$DTB"
-          file "$DTB"
-          sha256sum "$DTB"
 
-          echo "===== DTB COMPATIBLE CHECK ====="
+          file "$DTB"
+          ls -lh "$DTB"
+
+          echo "===== DTB STRUCTURE ====="
+
+          dtc -I dtb -O dts "$DTB" -o /dev/null
+
+          echo "===== ROOT COMPATIBLE ====="
 
           fdtget "$DTB" / compatible
 
-      - name: Prepare Native UBports artifacts
+          echo "===== DTB SHA256 ====="
+
+          sha256sum "$DTB"
+
+      # ==========================================
+      # 8. DISCOVER AND VALIDATE DTBO
+      # ==========================================
+
+      - name: Discover and Audit DTBO
         run: |
-          mkdir -p dist
+          set -euo pipefail
 
+          QCOM_OUT="kernel/out/arch/arm64/boot/dts/qcom"
+
+          mkdir -p dist/NATIVE-UBPORT-SWEET/dtbo
+
+          mapfile -t DTBO_FILES < <(
+            find "$QCOM_OUT" -type f -name '*.dtbo' | sort
+          )
+
+          echo "===== DTBO DISCOVERY ====="
+
+          echo "Total DTBO found: ${#DTBO_FILES[@]}"
+
+          if [ "${#DTBO_FILES[@]}" -eq 0 ]; then
+
+            echo "No DTBO generated by this kernel source."
+
+            cat > dist/NATIVE-UBPORT-SWEET/DTBO_STATUS.txt <<'EOF'
+          DTBO STATUS: NOT PROVIDED
+
+          The selected SM7150 mainline kernel source did not
+          produce any DTBO files in the Qualcomm DTS output.
+
+          No artificial DTBO has been created.
+
+          A separate compatible overlay source may be needed
+          if the target boot architecture requires one.
+          EOF
+
+          else
+
+            for DTBO in "${DTBO_FILES[@]}"; do
+
+              NAME="$(basename "$DTBO")"
+
+              echo "===== CHECKING $NAME ====="
+
+              test -s "$DTBO"
+
+              file "$DTBO"
+
+              dtc -I dtb -O dts "$DTBO" -o /dev/null
+
+              cp "$DTBO" \
+                "dist/NATIVE-UBPORT-SWEET/dtbo/$NAME"
+
+              sha256sum "$DTBO"
+
+            done
+
+            echo "DTBO STATUS: GENERATED AND STRUCTURALLY VALIDATED" \
+              > dist/NATIVE-UBPORT-SWEET/DTBO_STATUS.txt
+
+          fi
+
+          echo "===== DTBO AUDIT COMPLETE ====="
+
+      # ==========================================
+      # 9. PREPARE ARTIFACTS
+      # ==========================================
+
+      - name: Prepare Native UBports Audit Package
+        run: |
+          set -euo pipefail
+
+          PACKAGE="dist/NATIVE-UBPORT-SWEET"
+
+          mkdir -p "$PACKAGE"
+
+          # Kernel Image
           cp kernel/out/arch/arm64/boot/Image \
-            dist/Image
+            "$PACKAGE/Image"
 
-          cp kernel/out/arch/arm64/boot/dts/qcom/sm7150-xiaomi-sweet.dtb \
-            dist/sm7150-xiaomi-sweet.dtb
+          # Sweet Device Tree
+          cp kernel/out/arch/arm64/boot/dts/qcom/${DEVICE_DTB} \
+            "$PACKAGE/${DEVICE_DTB}"
 
-          echo "===== FINAL ARTIFACTS ====="
-          ls -lh dist/
+          # Kernel configuration
+          cp kernel/out/.config \
+            "$PACKAGE/kernel.config"
 
-          echo "===== SHA256 ====="
-          sha256sum dist/*
+          # Build log
+          cp build-logs/kernel-build.log \
+            "$PACKAGE/kernel-build.log"
 
-      - name: Upload Native UBports First Image
+          # Optional System.map
+          if [ -s kernel/out/System.map ]; then
+            cp kernel/out/System.map \
+              "$PACKAGE/System.map"
+          fi
+
+          # ======================================
+          # BUILD MANIFEST
+          # ======================================
+
+          cd kernel
+
+          KERNEL_VERSION="$(make -s O=out kernelversion)"
+          SOURCE_COMMIT="$(git rev-parse HEAD)"
+          SOURCE_BRANCH="$(git branch --show-current)"
+          GCC_VERSION="$(aarch64-linux-gnu-gcc -dumpversion)"
+          DTC_VERSION="$(dtc --version)"
+
+          cd ..
+
+          cat > "$PACKAGE/manifest.txt" <<EOF
+          NATIVE UBPORT SWEET
+          ==================
+
+          Device: Xiaomi Redmi Note 10 Pro
+          Codename: sweet
+          SoC: Qualcomm SM7150
+          Architecture: ARM64
+
+          Kernel Repository:
+          https://github.com/sm7150-mainline/linux
+
+          Kernel Branch: v7.2
+          Kernel Version: ${KERNEL_VERSION}
+          Source Commit: ${SOURCE_COMMIT}
+
+          Compiler: GCC ${GCC_VERSION}
+          Device Tree Compiler: ${DTC_VERSION}
+
+          Kernel Image: Image
+          Device Tree: ${DEVICE_DTB}
+
+          Build Date UTC: $(date -u '+%Y-%m-%d %H:%M:%S')
+
+          Build Targets:
+          Image
+          dtbs
+
+          Package Purpose:
+          Native UBports kernel audit.
+
+          NOTE:
+          Successful compilation does not guarantee
+          that the kernel can boot on the device.
+          EOF
+
+          # ======================================
+          # SHA256 MANIFEST
+          # ======================================
+
+          cd "$PACKAGE"
+
+          find . -type f \
+            ! -name SHA256SUMS \
+            -print0 \
+            | sort -z \
+            | xargs -0 sha256sum > SHA256SUMS
+
+          cd ../..
+
+          # ======================================
+          # CREATE ZIP
+          # ======================================
+
+          cd dist
+
+          zip -qr \
+            NATIVE-UBPORT-SWEET-Complete-Audit.zip \
+            NATIVE-UBPORT-SWEET
+
+          echo "===== FINAL PACKAGE ====="
+
+          find NATIVE-UBPORT-SWEET \
+            -maxdepth 2 -type f -exec ls -lh {} \;
+
+          ls -lh NATIVE-UBPORT-SWEET-Complete-Audit.zip
+
+      # ==========================================
+      # 10. FINAL VALIDATION
+      # ==========================================
+
+      - name: Final Artifact Validation
+        run: |
+          set -euo pipefail
+
+          PACKAGE="dist/NATIVE-UBPORT-SWEET"
+
+          echo "===== REQUIRED FILES ====="
+
+          test -s "$PACKAGE/Image"
+          test -s "$PACKAGE/${DEVICE_DTB}"
+          test -s "$PACKAGE/kernel.config"
+          test -s "$PACKAGE/manifest.txt"
+          test -s "$PACKAGE/SHA256SUMS"
+
+          echo "===== VERIFY CHECKSUMS ====="
+
+          cd "$PACKAGE"
+
+          sha256sum -c SHA256SUMS
+
+          cd ../..
+
+          echo "===== ZIP VALIDATION ====="
+
+          unzip -t \
+            dist/NATIVE-UBPORT-SWEET-Complete-Audit.zip
+
+          echo "===== FINAL STATUS ====="
+          echo "Image: PASS"
+          echo "Sweet DTB: PASS"
+          echo "Configuration: PASS"
+          echo "Manifest: PASS"
+          echo "SHA256: PASS"
+          echo "ZIP: PASS"
+
+          if [ -d "$PACKAGE/dtbo" ] && \
+             [ -n "$(find "$PACKAGE/dtbo" -type f -name '*.dtbo' -print -quit)" ]; then
+            echo "DTBO: GENERATED"
+          else
+            echo "DTBO: NOT PROVIDED BY SOURCE"
+          fi
+
+      # ==========================================
+      # 11. UPLOAD ARTIFACTS
+      # ==========================================
+
+      - name: Upload Native UBports Complete Audit
         uses: actions/upload-artifact@v4
         with:
-          name: NATIVE-UBPORT-SWEET-First-Image-DTB
-          path: dist/*
+          name: NATIVE-UBPORT-SWEET-Complete-Audit
+          path: dist/
           if-no-files-found: error
           retention-days: 14
