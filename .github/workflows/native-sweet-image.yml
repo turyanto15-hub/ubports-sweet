@@ -70,12 +70,30 @@ jobs:
             exit 1
           fi
 
-      - name: Build kernel Image
+      - name: Build kernel Image and Sweet DTB
         working-directory: kernel
         run: |
-          make O=out ARCH=arm64 \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            -j2 Image
+          set -euo pipefail
+
+          mkdir -p ../build-logs
+
+          echo "===== CHECK SWEET DTB TARGET ====="
+          grep -n "sm7150-xiaomi-sweet.dtb" \
+            arch/arm64/boot/dts/qcom/Makefile
+
+          echo
+          echo "===== BUILD IMAGE AND SWEET DTB ====="
+          make O="$OUT_DIR" -j2 \
+            Image \
+            arch/arm64/boot/dts/qcom/sm7150-xiaomi-sweet.dtb \
+            2>&1 | tee ../build-logs/kernel-build.log
+
+          echo
+          echo "===== OUTPUT CHECK ====="
+          test -s "$OUT_DIR/arch/arm64/boot/Image"
+          test -s "$OUT_DIR/arch/arm64/boot/dts/qcom/$DEVICE_DTB"
+
+          echo "PASS: Image and Sweet DTB generated."
 
       - name: Verify Image
         working-directory: kernel
