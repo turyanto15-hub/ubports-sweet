@@ -111,6 +111,92 @@ jobs:
       # 5. Merge SM7150 configuration
       - name: Merge SM7150 configuration
         working-directory: kernel
+name: Native UBports Sweet Kernel Build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-ubports-sweet
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build Native Linux for Redmi Note 10 Pro
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+
+    env:
+      ARCH: arm64
+      CROSS_COMPILE: aarch64-linux-gnu-
+      JOBS: 2
+
+    steps:
+      - name: Checkout native kernel
+        uses: actions/checkout@v4
+        with:
+          repository: turyanto15-hub/linux-native
+          ref: v7.2
+          path: kernel
+          fetch-depth: 1
+
+      - name: Install build dependencies
+        run: |
+          set -e
+
+          sudo apt-get update
+
+          sudo apt-get install -y \
+            bc bison build-essential cpio \
+            device-tree-compiler dwarves file flex \
+            gcc-aarch64-linux-gnu git libelf-dev \
+            libncurses-dev libssl-dev lz4 make \
+            python3 rsync unzip zip
+
+          echo "===== GCC VERSION ====="
+          aarch64-linux-gnu-gcc --version | head -1
+
+          echo "===== DTC VERSION ====="
+          dtc --version
+
+      - name: Verify native kernel source
+        working-directory: kernel
+        run: |
+          set -e
+
+          echo "===== REPOSITORY ====="
+          git remote -v
+
+          echo "===== COMMIT ====="
+          git log -1 --format='%H%n%s'
+
+          echo "===== KERNEL VERSION ====="
+          make kernelversion
+
+          test -s arch/arm64/configs/sm7150.config
+          test -s arch/arm64/boot/dts/qcom/sm7150-xiaomi-sweet.dts
+          test -s drivers/input/touchscreen/goodix_gtx8.c
+          test -s drivers/gpu/drm/panel/panel-samsung-ams667yr01.c
+
+          echo "Native source validation passed."
+
+      - name: Initialize kernel configuration
+        working-directory: kernel
+        run: |
+          set -e
+
+          mkdir -p out
+
+          make O=out \
+            ARCH=arm64 \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            defconfig
+
+      - name: Merge SM7150 configuration
+        working-directory: kernel
         run: |
           set -e
 
@@ -122,7 +208,6 @@ jobs:
 
           echo "===== SM7150 CONFIGURATION MERGED ====="
 
-      # 6. Enable Sweet display and touchscreen drivers
       - name: Enable Sweet hardware drivers
         working-directory: kernel
         run: |
@@ -150,7 +235,7 @@ jobs:
 
           grep -E \
             '^(CONFIG_I2C|CONFIG_OF|CONFIG_GPIOLIB|CONFIG_REGULATOR|CONFIG_INPUT|CONFIG_DRM|CONFIG_DRM_MSM|CONFIG_DRM_MIPI_DSI|CONFIG_BACKLIGHT_CLASS_DEVICE|CONFIG_TOUCHSCREEN_GOODIX_GTX8|CONFIG_DRM_PANEL_SAMSUNG_AMS667YR01)=' \
-            out/.config
+            out/.config || true
 
           echo "===== VALIDATE REQUIRED DRIVERS ====="
 
@@ -162,7 +247,6 @@ jobs:
 
           echo "All required driver configurations are enabled."
 
-      # 7. Build native kernel Image and Sweet DTB
       - name: Build native kernel and Sweet DTB
         working-directory: kernel
         run: |
@@ -183,7 +267,6 @@ jobs:
 
           echo "===== BUILD FINISHED ====="
 
-      # 8. Verify kernel Image and Sweet DTB
       - name: Verify build outputs
         working-directory: kernel
         run: |
@@ -205,9 +288,14 @@ jobs:
           echo "===== VERIFY CONFIGURATION ====="
           test -s out/.config
 
+          echo "===== VERIFY SYSTEM MAP ====="
+          test -s out/System.map
+
+          echo "===== VERIFY BUILD LOG ====="
+          test -s build.log
+
           echo "===== BUILD OUTPUT VALIDATION PASSED ====="
 
-      # 9. Upload native kernel artifacts
       - name: Upload native Sweet kernel artifacts
         if: always()
         uses: actions/upload-artifact@v4
