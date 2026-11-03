@@ -71,9 +71,11 @@ jobs:
             arch/arm64/boot/dts/qcom/Makefile
 
       - name: Install build dependencies
+        shell: bash
         run: |
-          sudo apt-get update
+          set -euo pipefail
 
+          sudo apt-get update
           sudo apt-get install -y \
             gcc-aarch64-linux-gnu \
             g++-aarch64-linux-gnu \
