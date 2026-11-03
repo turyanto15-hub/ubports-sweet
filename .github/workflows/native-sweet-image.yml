@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   build-native-sweet:
-    name: Build Image DTB DTBO and Audit
+    name: Build Native Sweet Kernel
     runs-on: ubuntu-24.04
     timeout-minutes: 120
 
@@ -26,6 +26,7 @@ jobs:
       DEVICE_DTB: sm7150-xiaomi-sweet.dtb
 
     steps:
+
       # ==========================================
       # 1. CHECKOUT
       # ==========================================
@@ -39,7 +40,7 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          set -e
+          set -euo pipefail
 
           sudo apt-get update
 
@@ -71,7 +72,7 @@ jobs:
       # 3. CLONE KERNEL SOURCE
       # ==========================================
 
-      - name: Clone SM7150 mainline kernel
+      - name: Clone SM7150 Mainline Kernel
         run: |
           set -euo pipefail
 
@@ -97,11 +98,11 @@ jobs:
           grep -n "sm7150-xiaomi-sweet.dtb" \
             arch/arm64/boot/dts/qcom/Makefile
 
-          echo "===== AVAILABLE SWEET DTBO TARGETS ====="
+          echo "===== DTBO TARGETS ====="
 
           if grep -nEi 'sweet.*dtbo|dtbo.*sweet' \
             arch/arm64/boot/dts/qcom/Makefile; then
-            echo "Sweet-specific DTBO target found."
+            echo "Sweet DTBO target found."
           else
             echo "No sweet-specific DTBO target declared."
           fi
@@ -110,28 +111,106 @@ jobs:
       # 4. CONFIGURATION
       # ==========================================
 
-      - name: Configure ARM64 kernel
+      - name: Configure Native Sweet Kernel
         run: |
           set -euo pipefail
 
           cd kernel
 
+          mkdir -p out
+
           make O=out defconfig
+
+          echo "===== BASE CONFIGURATION ====="
 
           ./scripts/config --file out/.config \
             --enable ARCH_QCOM \
-            --enable OF
+            --enable OF \
+            --enable IOMMU_SUPPORT \
+            --enable COMMON_CLK \
+            --enable PM \
+            --enable REGULATOR \
+            --enable GPIOLIB \
+            --enable I2C \
+            --enable INPUT \
+            --enable INPUT_EVDEV \
+            --enable INPUT_TOUCHSCREEN \
+            --enable BACKLIGHT_CLASS_DEVICE \
+            --enable DRM \
+            --enable DRM_MSM \
+            --enable DRM_MSM_KMS \
+            --enable DRM_MSM_DSI \
+            --enable DRM_PANEL \
+            --enable BLK_DEV_INITRD \
+            --enable DEVTMPFS \
+            --enable DEVTMPFS_MOUNT \
+            --enable EXT4_FS \
+            --enable TMPFS
+
+          echo "===== OPTIONAL PANEL DRIVER ====="
+
+          if grep -RqE \
+            '^[[:space:]]*config DRM_PANEL_SAMSUNG_AMS667YR01$' \
+            drivers/gpu/drm/panel; then
+
+            ./scripts/config --file out/.config \
+              --enable DRM_PANEL_SAMSUNG_AMS667YR01
+
+            echo "AMS667YR01 symbol found."
+
+          else
+            echo "AMS667YR01 driver not present in this source."
+          fi
+
+          echo "===== GOODIX GTX8 DRIVER ====="
+
+          if grep -RqE \
+            '^[[:space:]]*config TOUCHSCREEN_GOODIX_GTX8$' \
+            drivers/input/touchscreen; then
+
+            ./scripts/config --file out/.config \
+              --enable TOUCHSCREEN_GOODIX_GTX8
+
+            echo "Goodix GTX8 symbol found."
+
+          else
+            echo "Goodix GTX8 driver not present in this source."
+          fi
+
+          echo "===== OLDDEFCONFIG ====="
 
           make O=out olddefconfig
 
-          echo "===== CONFIGURATION AUDIT ====="
+          echo "===== REQUIRED CONFIG VALIDATION ====="
+
+          for SYMBOL in \
+            ARCH_QCOM \
+            OF \
+            I2C \
+            INPUT \
+            INPUT_TOUCHSCREEN \
+            DRM \
+            DRM_MSM \
+            DRM_MSM_KMS \
+            DRM_MSM_DSI \
+            DRM_PANEL
+
+          do
+            if ! grep -qx "CONFIG_${SYMBOL}=y" out/.config; then
+              echo "ERROR: CONFIG_${SYMBOL} is not enabled!"
+              exit 1
+            fi
+
+            echo "PASS: CONFIG_${SYMBOL}=y"
+          done
+
+          echo "===== FINAL DISPLAY CONFIG ====="
 
           grep -E \
-            '^CONFIG_ARM64=y|^CONFIG_64BIT=y|^CONFIG_ARCH_QCOM=y|^CONFIG_OF=y|^CONFIG_OF_OVERLAY=y' \
+            '^(CONFIG_ARCH_QCOM=|CONFIG_DRM=|CONFIG_DRM_MSM=|CONFIG_DRM_MSM_KMS=|CONFIG_DRM_MSM_DSI=|CONFIG_DRM_PANEL=|CONFIG_DRM_PANEL_SAMSUNG_AMS667YR01=|CONFIG_TOUCHSCREEN_GOODIX_GTX8=|CONFIG_INPUT=|CONFIG_INPUT_TOUCHSCREEN=)' \
             out/.config || true
 
-          echo "===== CONFIG FILE ====="
-          test -s out/.config
+          cp out/.config ../kernel.config
 
       # ==========================================
       # 5. BUILD IMAGE + DTB + DTBO
@@ -172,6 +251,7 @@ jobs:
           ls -lh "$IMAGE"
 
           echo "===== IMAGE SHA256 ====="
+
           sha256sum "$IMAGE"
 
       # ==========================================
@@ -225,18 +305,17 @@ jobs:
 
           if [ "${#DTBO_FILES[@]}" -eq 0 ]; then
 
-            echo "No DTBO generated by this kernel source."
+            echo "No DTBO generated."
 
             cat > dist/NATIVE-UBPORT-SWEET/DTBO_STATUS.txt <<'EOF'
           DTBO STATUS: NOT PROVIDED
 
-          The selected SM7150 mainline kernel source did not
-          produce any DTBO files in the Qualcomm DTS output.
+          No DTBO files were generated by this source build.
 
           No artificial DTBO has been created.
 
-          A separate compatible overlay source may be needed
-          if the target boot architecture requires one.
+          Check whether the target device requires a separate
+          device tree overlay.
           EOF
 
           else
@@ -283,7 +362,7 @@ jobs:
           cp kernel/out/arch/arm64/boot/Image \
             "$PACKAGE/Image"
 
-          # Sweet Device Tree
+          # Sweet DTB
           cp kernel/out/arch/arm64/boot/dts/qcom/${DEVICE_DTB} \
             "$PACKAGE/${DEVICE_DTB}"
 
@@ -327,7 +406,7 @@ jobs:
           Kernel Repository:
           https://github.com/sm7150-mainline/linux
 
-          Kernel Branch: v7.2
+          Kernel Branch: ${SOURCE_BRANCH}
           Kernel Version: ${KERNEL_VERSION}
           Source Commit: ${SOURCE_COMMIT}
 
@@ -414,6 +493,7 @@ jobs:
             dist/NATIVE-UBPORT-SWEET-Complete-Audit.zip
 
           echo "===== FINAL STATUS ====="
+
           echo "Image: PASS"
           echo "Sweet DTB: PASS"
           echo "Configuration: PASS"
@@ -421,11 +501,11 @@ jobs:
           echo "SHA256: PASS"
           echo "ZIP: PASS"
 
-          if [ -d "$PACKAGE/dtbo" ] && \
-             [ -n "$(find "$PACKAGE/dtbo" -type f -name '*.dtbo' -print -quit)" ]; then
+          if [ -n "$(find "$PACKAGE/dtbo" \
+            -type f -name '*.dtbo' -print -quit)" ]; then
             echo "DTBO: GENERATED"
           else
-            echo "DTBO: NOT PROVIDED BY SOURCE"
+            echo "DTBO: NOT PROVIDED"
           fi
 
       # ==========================================
