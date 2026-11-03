@@ -1,5 +1,5 @@
 
-name: Native UBports Sweet - First Image
+name: Native UBports Sweet Kernel Build
 
 on:
   workflow_dispatch:
@@ -7,157 +7,216 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: native-ubports-sweet
+  cancel-in-progress: true
+
 jobs:
   build:
-    name: Build ARM64 Image and Sweet DTB
+    name: Build Native Linux for Redmi Note 10 Pro
     runs-on: ubuntu-24.04
+    timeout-minutes: 180
+
+    env:
+      ARCH: arm64
+      CROSS_COMPILE: aarch64-linux-gnu-
+      JOBS: 2
 
     steps:
+      # 1. Checkout fork native milik sendiri
+      - name: Checkout native kernel
+        uses: actions/checkout@v4
+        with:
+          repository: turyanto15-hub/linux-native
+          ref: v7.2
+          path: kernel
+          fetch-depth: 1
+
+      # 2. Install build dependencies
       - name: Install build dependencies
         run: |
+          set -e
+
           sudo apt-get update
+
           sudo apt-get install -y \
             bc \
             bison \
             build-essential \
+            cpio \
+            device-tree-compiler \
+            dwarves \
+            file \
             flex \
             gcc-aarch64-linux-gnu \
-            binutils-aarch64-linux-gnu \
+            git \
             libelf-dev \
-            libssl-dev \
             libncurses-dev \
+            libssl-dev \
+            lz4 \
             make \
             python3 \
             rsync \
-            git \
-            device-tree-compiler
+            unzip \
+            zip
 
-      - name: Clone SM7150 mainline kernel
+          echo "===== GCC VERSION ====="
+          aarch64-linux-gnu-gcc --version | head -1
+
+          echo "===== DTC VERSION ====="
+          dtc --version
+
+      # 3. Verify native kernel source
+      - name: Verify native kernel source
+        working-directory: kernel
         run: |
-          git clone --depth=1 \
-            --branch v7.2 \
-            https://github.com/sm7150-mainline/linux.git kernel
+          set -e
 
-      - name: Configure kernel
+          echo "===== REPOSITORY ====="
+          git remote -v
+
+          echo "===== COMMIT ====="
+          git log -1 --oneline
+
+          echo "===== KERNEL VERSION ====="
+          make kernelversion
+
+          echo "===== CHECK CONFIG FRAGMENT ====="
+          test -s arch/arm64/configs/sm7150.config
+          ls -lh arch/arm64/configs/sm7150.config
+
+          echo "===== CHECK SWEET DTS ====="
+          test -s arch/arm64/boot/dts/qcom/sm7150-xiaomi-sweet.dts
+          ls -lh arch/arm64/boot/dts/qcom/sm7150-xiaomi-sweet.dts
+
+          echo "===== CHECK DRIVER SOURCE ====="
+          test -s drivers/input/touchscreen/goodix_gtx8.c
+          test -s drivers/gpu/drm/panel/panel-samsung-ams667yr01.c
+
+          echo "Native source validation passed."
+
+      # 4. Initialize base kernel configuration
+      - name: Initialize kernel configuration
+        working-directory: kernel
+        run: |
+          set -e
+
+          mkdir -p out
+
+          make O=out \
+            ARCH=arm64 \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            defconfig
+
+      # 5. Merge SM7150 configuration
+      - name: Merge SM7150 configuration
+        working-directory: kernel
+        run: |
+          set -e
+
+          bash scripts/kconfig/merge_config.sh \
+            -m \
+            -O out \
+            out/.config \
+            arch/arm64/configs/sm7150.config
+
+          echo "===== SM7150 CONFIGURATION MERGED ====="
+
+      # 6. Enable Sweet display and touchscreen drivers
+      - name: Enable Sweet hardware drivers
+        working-directory: kernel
+        run: |
+          set -e
+
+          scripts/config --file out/.config \
+            --enable I2C \
+            --enable OF \
+            --enable GPIOLIB \
+            --enable REGULATOR \
+            --enable INPUT \
+            --enable DRM \
+            --enable DRM_MSM \
+            --enable DRM_MIPI_DSI \
+            --enable BACKLIGHT_CLASS_DEVICE \
+            --enable TOUCHSCREEN_GOODIX_GTX8 \
+            --enable DRM_PANEL_SAMSUNG_AMS667YR01
+
+          make O=out \
+            ARCH=arm64 \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            olddefconfig
+
+          echo "===== FINAL HARDWARE CONFIGURATION ====="
+
+          grep -E \
+            '^(CONFIG_I2C|CONFIG_OF|CONFIG_GPIOLIB|CONFIG_REGULATOR|CONFIG_INPUT|CONFIG_DRM|CONFIG_DRM_MSM|CONFIG_DRM_MIPI_DSI|CONFIG_BACKLIGHT_CLASS_DEVICE|CONFIG_TOUCHSCREEN_GOODIX_GTX8|CONFIG_DRM_PANEL_SAMSUNG_AMS667YR01)=' \
+            out/.config
+
+          echo "===== VALIDATE REQUIRED DRIVERS ====="
+
+          grep -q '^CONFIG_TOUCHSCREEN_GOODIX_GTX8=y$' out/.config
+          grep -q '^CONFIG_DRM_PANEL_SAMSUNG_AMS667YR01=y$' out/.config
+          grep -q '^CONFIG_DRM_MSM=y$' out/.config
+          grep -q '^CONFIG_DRM_MIPI_DSI=y$' out/.config
+          grep -q '^CONFIG_BACKLIGHT_CLASS_DEVICE=y$' out/.config
+
+          echo "All required driver configurations are enabled."
+
+      # 7. Build native kernel Image and Sweet DTB
+      - name: Build native kernel and Sweet DTB
         working-directory: kernel
         run: |
           set -euo pipefail
 
-          export ARCH=arm64
-          export CROSS_COMPILE=aarch64-linux-gnu-
-          export OUT_DIR="$GITHUB_WORKSPACE/kernel/out"
+          echo "===== BUILD INFORMATION ====="
+          echo "Architecture: $ARCH"
+          echo "Compiler: $CROSS_COMPILE"
+          echo "Jobs: $JOBS"
 
-          echo "===== CREATE BASE CONFIGURATION ====="
+          echo "===== BUILD START ====="
 
-          make O="$OUT_DIR" defconfig
+          make -j"$JOBS" O=out \
+            ARCH=arm64 \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            Image qcom/sm7150-xiaomi-sweet.dtb \
+            2>&1 | tee build.log
 
-          echo
-          echo "===== APPLY ARM64 CONFIGURATION ====="
+          echo "===== BUILD FINISHED ====="
 
-          scripts/config --file "$OUT_DIR/.config" \
-            --enable ARM64_4K_PAGES \
-            --disable ARM64_16K_PAGES \
-            --disable ARM64_64K_PAGES \
-            --enable ARM64_VA_BITS_39 \
-            --disable ARM64_VA_BITS_48 \
-            --disable ARM64_VA_BITS_52 \
-            --enable ARM64_PA_BITS_48 \
-            --disable ARM64_PA_BITS_52
-
-          make O="$OUT_DIR" olddefconfig
-
-          echo
-          echo "===== VERIFIED ARM64 CONFIG ====="
-
-          grep -E 'CONFIG_ARM64_(4K_PAGES|VA_BITS|PA_BITS|LPA2)' \
-            "$OUT_DIR/.config"
-
-          grep -q '^CONFIG_ARM64_4K_PAGES=y$' "$OUT_DIR/.config"
-          grep -q '^CONFIG_ARM64_VA_BITS_39=y$' "$OUT_DIR/.config"
-          grep -q '^CONFIG_ARM64_VA_BITS=39$' "$OUT_DIR/.config"
-          grep -q '^CONFIG_ARM64_PA_BITS_48=y$' "$OUT_DIR/.config"
-          grep -q '^CONFIG_ARM64_PA_BITS=48$' "$OUT_DIR/.config"
-
-          if grep -q '^CONFIG_ARM64_LPA2=y$' "$OUT_DIR/.config"; then
-            echo "ERROR: LPA2 unexpectedly enabled"
-            exit 1
-          fi
-
-          echo "PASS: ARM64 configuration verified."
-
-      - name: Build kernel Image and Sweet DTB
-        working-directory: kernel
-        run: |
-          set -euo pipefail
-
-          export ARCH=arm64
-          export CROSS_COMPILE=aarch64-linux-gnu-
-          export OUT_DIR="$GITHUB_WORKSPACE/kernel/out"
-
-          DEVICE_DTB="sm7150-xiaomi-sweet.dtb"
-
-          mkdir -p "$GITHUB_WORKSPACE/build-logs"
-
-          echo "===== CHECK SWEET DTB TARGET ====="
-
-          grep -n "sm7150-xiaomi-sweet.dtb" \
-            arch/arm64/boot/dts/qcom/Makefile
-
-          echo
-          echo "===== BUILD IMAGE AND SWEET DTB ====="
-
-          make O="$OUT_DIR" -j2 \
-              Image \
-              "qcom/$DEVICE_DTB" \
-              2>&1 | tee "$GITHUB_WORKSPACE/build-logs/kernel-build.log"
-
-          echo
-          echo "===== OUTPUT CHECK ====="
-
-          test -s "$OUT_DIR/arch/arm64/boot/Image"
-          test -s "$OUT_DIR/arch/arm64/boot/dts/qcom/$DEVICE_DTB"
-
-          echo "PASS: Image and Sweet DTB generated."
-
+      # 8. Verify kernel Image and Sweet DTB
       - name: Verify build outputs
         working-directory: kernel
         run: |
-          set -euo pipefail
+          set -e
 
-          OUT_DIR="$GITHUB_WORKSPACE/kernel/out"
+          IMAGE="out/arch/arm64/boot/Image"
+          DTB="out/arch/arm64/boot/dts/qcom/sm7150-xiaomi-sweet.dtb"
 
-          IMAGE="$OUT_DIR/arch/arm64/boot/Image"
-          DTB="$OUT_DIR/arch/arm64/boot/dts/qcom/sm7150-xiaomi-sweet.dtb"
-
-          echo "===== KERNEL IMAGE ====="
-          file "$IMAGE"
+          echo "===== VERIFY KERNEL IMAGE ====="
+          test -s "$IMAGE"
           ls -lh "$IMAGE"
-          sha256sum "$IMAGE"
+          file "$IMAGE"
 
-          echo
-          echo "===== SWEET DEVICE TREE ====="
-          file "$DTB"
+          echo "===== VERIFY SWEET DTB ====="
+          test -s "$DTB"
           ls -lh "$DTB"
-          sha256sum "$DTB"
+          file "$DTB"
 
-          echo
-          echo "PASS: Both build outputs verified."
+          echo "===== VERIFY CONFIGURATION ====="
+          test -s out/.config
 
-      - name: Upload Image and Sweet DTB
-        uses: actions/upload-artifact@v4
-        with:
-          name: NATIVE-UBPORT-SWEET-Image-and-DTB
-          path: |
-            kernel/out/arch/arm64/boot/Image
-            kernel/out/arch/arm64/boot/dts/qcom/sm7150-xiaomi-sweet.dtb
-          if-no-files-found: error
-          retention-days: 14
+          echo "===== BUILD OUTPUT VALIDATION PASSED ====="
 
-      - name: Upload build log
+      # 9. Upload native kernel artifacts
+      - name: Upload native Sweet kernel artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: NATIVE-UBPORT-SWEET-Build-Logs
-          path: build-logs/
-          if-no-files-found: ignore
-          retention-days: 7
+          name: NATIVE-UBPORT-SWEET-Image-and-DTB
+          if-no-files-found: warn
+          path: |
+            kernel/build.log
+            kernel/out/.config
+            kernel/out/System.map
+            kernel/out/arch/arm64/boot/Image
+            kernel/out/arch/arm64/boot/dts/qcom/sm7150-xiaomi-sweet.dtb
