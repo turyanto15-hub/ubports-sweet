@@ -107,9 +107,9 @@ jobs:
           echo "===== BUILD IMAGE AND SWEET DTB ====="
 
           make O="$OUT_DIR" -j2 \
-            Image \
-            "arch/arm64/boot/dts/qcom/$DEVICE_DTB" \
-            2>&1 | tee "$GITHUB_WORKSPACE/build-logs/kernel-build.log"
+              Image \
+              "qcom/$DEVICE_DTB" \
+              2>&1 | tee "$GITHUB_WORKSPACE/build-logs/kernel-build.log"
 
           echo
           echo "===== OUTPUT CHECK ====="
