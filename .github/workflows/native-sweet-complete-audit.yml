@@ -67,15 +67,11 @@ jobs:
             arch/arm64/boot/dts/qcom/Makefile
 
       - name: Install build dependencies
-        shell: bash
         run: |
-          set -euo pipefail
-
           sudo apt-get update
-
           sudo apt-get install -y \
-            build-essential \
-            gcc-13-aarch64-linux-gnu \
+            gcc-aarch64-linux-gnu \
+            g++-aarch64-linux-gnu \
             binutils-aarch64-linux-gnu \
             device-tree-compiler \
             bc \
@@ -91,21 +87,6 @@ jobs:
             file \
             zip \
             unzip
-
-          echo "===== COMPILER ====="
-          aarch64-linux-gnu-gcc --version
-
-          echo
-          echo "===== DTC ====="
-          dtc --version
-
-          echo
-          echo "===== PAHOLE ====="
-          pahole --version
-
-          echo
-          echo "===== MAKE ====="
-          make --version | head -1
 
       - name: Clean kernel configuration and build
         shell: bash
