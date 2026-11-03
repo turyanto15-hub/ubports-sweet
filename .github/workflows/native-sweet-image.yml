@@ -140,7 +140,7 @@ jobs:
             --enable DRM_MSM \
             --enable DRM_MSM_KMS \
             --enable DRM_MSM_DSI \
-            --enable DRM_PANEL \
+            --enable DRM_PANEL
             --enable BLK_DEV_INITRD \
             --enable DEVTMPFS \
             --enable DEVTMPFS_MOUNT \
