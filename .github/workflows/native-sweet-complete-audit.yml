@@ -1,0 +1,370 @@
+
+name: Native UBports Sweet Complete Audit
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-sweet-build:
+    name: Clean SM7150 Sweet Kernel Build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+
+    env:
+      ARCH: arm64
+      CROSS_COMPILE: aarch64-linux-gnu-
+      SOURCE_REPO: turyanto15-hub/linux-native
+      SOURCE_BRANCH: v7.2
+      EXPECTED_COMMIT: fd78d17954a86ea6ceb0c535e618ea129e09f8dd
+      DEVICE: Xiaomi Redmi Note 10 Pro
+      CODENAME: sweet
+      OUT: ${{ github.workspace }}/out
+      KERNEL: ${{ github.workspace }}/kernel
+
+    steps:
+      - name: Checkout pinned kernel source
+        uses: actions/checkout@v4
+        with:
+          repository: turyanto15-hub/linux-native
+          ref: fd78d17954a86ea6ceb0c535e618ea129e09f8dd
+          path: kernel
+          fetch-depth: 1
+
+      - name: Verify source identity
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$KERNEL"
+
+          ACTUAL_COMMIT=$(git rev-parse HEAD)
+
+          echo "Repository: $SOURCE_REPO"
+          echo "Intended branch: $SOURCE_BRANCH"
+          echo "Expected commit: $EXPECTED_COMMIT"
+          echo "Actual commit:   $ACTUAL_COMMIT"
+
+          test "$ACTUAL_COMMIT" = "$EXPECTED_COMMIT"
+
+          echo "SOURCE_VERIFIED=YES" >> "$GITHUB_ENV"
+
+          echo
+          echo "===== KERNEL VERSION ====="
+          head -8 Makefile
+
+          echo
+          echo "===== SWEET DEVICE TREE ====="
+          test -s arch/arm64/boot/dts/qcom/sm7150-xiaomi-sweet.dts
+
+          echo
+          echo "===== SM7150 CONFIG ====="
+          test -s arch/arm64/configs/sm7150.config
+
+          grep -n 'sm7150-xiaomi-sweet.dtb' \
+            arch/arm64/boot/dts/qcom/Makefile
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update
+
+          sudo apt-get install -y \
+            build-essential \
+            gcc-13-aarch64-linux-gnu \
+            binutils-aarch64-linux-gnu \
+            device-tree-compiler \
+            bc \
+            bison \
+            flex \
+            libssl-dev \
+            libelf-dev \
+            dwarves \
+            python3 \
+            python3-dev \
+            rsync \
+            cpio \
+            file \
+            zip \
+            unzip
+
+          echo "===== COMPILER ====="
+          aarch64-linux-gnu-gcc --version
+
+          echo
+          echo "===== DTC ====="
+          dtc --version
+
+          echo
+          echo "===== PAHOLE ====="
+          pahole --version
+
+          echo
+          echo "===== MAKE ====="
+          make --version | head -1
+
+      - name: Clean kernel configuration and build
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$KERNEL"
+
+          mkdir -p "$OUT"
+          mkdir -p "$GITHUB_WORKSPACE/logs"
+
+          LOG="$GITHUB_WORKSPACE/logs/kernel-build.log"
+
+          exec > >(tee "$LOG") 2>&1
+
+          export ARCH="$ARCH"
+          export CROSS_COMPILE="$CROSS_COMPILE"
+          export KBUILD_BUILD_USER="ubports-audit"
+          export KBUILD_BUILD_HOST="github-actions"
+          export KBUILD_BUILD_VERSION=1
+
+          echo "===== CLEAN BUILD ====="
+          echo "Device: $DEVICE"
+          echo "Codename: $CODENAME"
+          echo "Commit: $EXPECTED_COMMIT"
+          echo "Output: $OUT"
+
+          rm -rf "$OUT"
+
+          mkdir -p "$OUT"
+
+          echo
+          echo "===== STEP 1: BASE DEFCONFIG ====="
+
+          make O="$OUT" \
+            ARCH=arm64 \
+            CROSS_COMPILE="$CROSS_COMPILE" \
+            defconfig
+
+          echo
+          echo "===== STEP 2: MERGE SM7150 CONFIG ====="
+
+          scripts/kconfig/merge_config.sh \
+            -m \
+            -O "$OUT" \
+            "$OUT/.config" \
+            arch/arm64/configs/sm7150.config
+
+          echo
+          echo "===== STEP 3: OLDDEFCONFIG ====="
+
+          make O="$OUT" \
+            ARCH=arm64 \
+            CROSS_COMPILE="$CROSS_COMPILE" \
+            olddefconfig
+
+          echo
+          echo "===== STEP 4: VALIDATE FINAL CONFIG ====="
+
+          CONFIG="$OUT/.config"
+
+          require_config() {
+            if ! grep -qx "$1=y" "$CONFIG"; then
+              echo "FATAL: Required config missing: $1"
+              exit 1
+            fi
+            echo "PASS: $1=y"
+          }
+
+          require_config CONFIG_ARM64
+          require_config CONFIG_ARCH_QCOM
+          require_config CONFIG_OF
+          require_config CONFIG_SMP
+          require_config CONFIG_DRM
+          require_config CONFIG_DRM_MSM
+          require_config CONFIG_DRM_PANEL_SAMSUNG_AMS667YR01
+          require_config CONFIG_TOUCHSCREEN_GOODIX_GTX8
+          require_config CONFIG_BLK_DEV_INITRD
+
+          echo
+          echo "===== FINAL CONFIG SUMMARY ====="
+
+          grep -E \
+            'CONFIG_LOCALVERSION=|CONFIG_ARCH_QCOM=|CONFIG_DRM_MSM=|CONFIG_DRM_PANEL_SAMSUNG_AMS667YR01=|CONFIG_TOUCHSCREEN_GOODIX_GTX8=|CONFIG_PSI=|CONFIG_UCLAMP_TASK=' \
+            "$CONFIG" || true
+
+          echo
+          echo "===== STEP 5: BUILD IMAGE AND SWEET DTB ====="
+
+          make -j"$(nproc)" \
+            O="$OUT" \
+            ARCH=arm64 \
+            CROSS_COMPILE="$CROSS_COMPILE" \
+            Image \
+            arch/arm64/boot/dts/qcom/sm7150-xiaomi-sweet.dtb
+
+          echo
+          echo "===== STEP 6: OUTPUT VALIDATION ====="
+
+          IMAGE="$OUT/arch/arm64/boot/Image"
+          DTB="$OUT/arch/arm64/boot/dts/qcom/sm7150-xiaomi-sweet.dtb"
+
+          test -s "$IMAGE"
+          test -s "$DTB"
+          test -s "$OUT/System.map"
+
+          file "$IMAGE"
+          file "$DTB"
+
+          echo
+          echo "===== DTB MODEL ====="
+
+          MODEL=$(fdtget -t s "$DTB" / model)
+          COMPATIBLE=$(fdtget -t s "$DTB" / compatible)
+
+          echo "Model: $MODEL"
+          echo "Compatible: $COMPATIBLE"
+
+          test "$MODEL" = "Xiaomi Redmi Note 10 Pro"
+
+          case " $COMPATIBLE " in
+            *" xiaomi,sweet "*) ;;
+            *)
+              echo "FATAL: xiaomi,sweet compatible missing"
+              exit 1
+              ;;
+          esac
+
+          echo
+          echo "===== BUILD SUCCESS ====="
+
+      - name: Package complete audit
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$KERNEL"
+
+          PKG="$GITHUB_WORKSPACE/package"
+          DEST="$PKG/NATIVE-UBPORT-SWEET"
+
+          mkdir -p "$DEST"
+
+          IMAGE="$OUT/arch/arm64/boot/Image"
+          DTB="$OUT/arch/arm64/boot/dts/qcom/sm7150-xiaomi-sweet.dtb"
+
+          cp "$IMAGE" "$DEST/Image"
+          cp "$DTB" "$DEST/sm7150-xiaomi-sweet.dtb"
+          cp "$OUT/.config" "$DEST/kernel.config"
+          cp "$OUT/System.map" "$DEST/System.map"
+          cp "$GITHUB_WORKSPACE/logs/kernel-build.log" \
+            "$DEST/kernel-build.log"
+
+          echo "DTBO AUDIT STATUS" > "$DEST/DTBO_STATUS.txt"
+          echo "=================" >> "$DEST/DTBO_STATUS.txt"
+          echo >> "$DEST/DTBO_STATUS.txt"
+          echo "Sweet-specific DTBO target: NOT DECLARED" >> "$DEST/DTBO_STATUS.txt"
+          echo "Sweet DTBO: NOT BUILT" >> "$DEST/DTBO_STATUS.txt"
+          echo "Generic Qualcomm DTBOs are not packaged as Sweet overlays." >> "$DEST/DTBO_STATUS.txt"
+          echo "DTB Sweet is built and validated independently." >> "$DEST/DTBO_STATUS.txt"
+
+          cat > "$DEST/manifest.txt" <<EOF
+          NATIVE UBPORT SWEET - CLEAN BUILD AUDIT
+          =======================================
+
+          Device: $DEVICE
+          Codename: $CODENAME
+          SoC: Qualcomm SM7150
+          Architecture: ARM64
+
+          Repository: $SOURCE_REPO
+          Intended branch: $SOURCE_BRANCH
+          Source commit: $EXPECTED_COMMIT
+
+          Kernel version:
+          $(sed -n '1,5p' Makefile)
+
+          Compiler:
+          $(aarch64-linux-gnu-gcc -dumpfullversion)
+
+          Device Tree Compiler:
+          $(dtc --version)
+
+          Build system: GitHub Actions Ubuntu 24.04
+          Configuration: defconfig + sm7150.config
+          Build mode: Clean output directory
+
+          Build targets:
+          Image
+          sm7150-xiaomi-sweet.dtb
+
+          DTBO:
+          No Sweet-specific DTBO target declared.
+
+          Audit:
+          Source commit verified.
+          Final configuration validated.
+          Image generated.
+          Sweet DTB generated.
+          Sweet DTB compatible verified.
+          SHA256 checksums generated.
+
+          Package purpose:
+          Independent Native UBports Sweet kernel audit.
+
+          WARNING:
+          Successful compilation does not guarantee
+          that the kernel can boot on the device.
+          EOF
+
+          echo
+          echo "===== GENERATE SHA256 ====="
+
+          cd "$DEST"
+
+          sha256sum \
+            Image \
+            sm7150-xiaomi-sweet.dtb \
+            kernel.config \
+            System.map \
+            kernel-build.log \
+            DTBO_STATUS.txt \
+            manifest.txt \
+            > SHA256SUMS
+
+          echo
+          echo "===== VERIFY SHA256 ====="
+
+          sha256sum -c SHA256SUMS
+
+          echo
+          echo "===== PACKAGE FILES ====="
+
+          cd "$PKG"
+
+          zip -qr \
+            "$GITHUB_WORKSPACE/NATIVE-UBPORT-SWEET-Complete-Audit.zip" \
+            NATIVE-UBPORT-SWEET
+
+          cd "$GITHUB_WORKSPACE"
+
+          sha256sum NATIVE-UBPORT-SWEET-Complete-Audit.zip \
+            > NATIVE-UBPORT-SWEET-Complete-Audit.zip.sha256
+
+          echo
+          echo "===== FINAL PACKAGE ====="
+
+          ls -lh \
+            NATIVE-UBPORT-SWEET-Complete-Audit.zip \
+            NATIVE-UBPORT-SWEET-Complete-Audit.zip.sha256
+
+      - name: Upload complete audit
+        uses: actions/upload-artifact@v4
+        with:
+          name: NATIVE-UBPORT-SWEET-Complete-Audit
+          path: |
+            NATIVE-UBPORT-SWEET-Complete-Audit.zip
+            NATIVE-UBPORT-SWEET-Complete-Audit.zip.sha256
+            logs/kernel-build.log
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
