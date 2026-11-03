@@ -175,13 +175,22 @@ jobs:
 
           echo
           echo "===== STEP 5: BUILD IMAGE AND SWEET DTB ====="
+      - name: Build kernel Image and Sweet DTB
+        working-directory: kernel
+        run: |
+          set -euxo pipefail
 
           make -j"$(nproc)" \
             O="$OUT" \
             ARCH=arm64 \
-            CROSS_COMPILE="$CROSS_COMPILE" \
-            Image \
-            arch/arm64/boot/dts/qcom/sm7150-xiaomi-sweet.dtb
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            Image
+
+          make -j"$(nproc)" \
+            O="$OUT" \
+            ARCH=arm64 \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            qcom/sm7150-xiaomi-sweet.dtb
 
           echo
           echo "===== STEP 6: OUTPUT VALIDATION ====="
