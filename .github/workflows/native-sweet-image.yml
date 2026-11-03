@@ -1,5 +1,5 @@
 
-name: NATIVE UBPORT SWEET - Kernel Image DTB DTBO Audit
+name: Build Native UBports Kernel for Sweet
 
 on:
   workflow_dispatch:
@@ -31,6 +31,8 @@ jobs:
 
       - name: Install build dependencies
         run: |
+          set -euo pipefail
+
           sudo apt-get update
           sudo apt-get install -y \
             bc \
@@ -49,43 +51,56 @@ jobs:
             git \
             zip \
             file \
-            xz-utils
+            xz-utils \
+            dwarves
 
-      - name: Clone SM7150 mainline kernel
+      - name: Clone Native SM7150 kernel
         run: |
           set -euo pipefail
 
           git clone \
             --depth=1 \
             --branch v7.2 \
-            https://github.com/sm7150-mainline/linux.git \
+            https://github.com/turyanto15-hub/linux-native.git \
             "$KERNEL_DIR"
 
           cd "$KERNEL_DIR"
 
-          echo "===== KERNEL SOURCE ====="
+          echo "===== KERNEL REPOSITORY ====="
+          git remote -v
+
+          echo
+          echo "===== KERNEL COMMIT ====="
           git log -1 --oneline
+
+          echo
+          echo "===== KERNEL VERSION ====="
           make kernelversion
 
           echo
           echo "===== SWEET DTS CHECK ====="
-          test -f arch/arm64/boot/dts/qcom/sm7150-xiaomi-sweet.dts
+          test -s arch/arm64/boot/dts/qcom/sm7150-xiaomi-sweet.dts
           echo "PASS: Sweet DTS found"
 
           echo
           echo "===== DTS MAKEFILE CHECK ====="
           grep -n "sm7150-xiaomi-sweet" \
-            arch/arm64/boot/dts/qcom/Makefile || true
+            arch/arm64/boot/dts/qcom/Makefile
+
+          echo
+          echo "===== CONFIG FRAGMENT CHECK ====="
+          test -s arch/arm64/configs/sm7150.config
+          echo "PASS: sm7150.config found"
 
           echo
           echo "===== PANEL DRIVER CHECK ====="
-          grep -R -n "DRM_PANEL_SAMSUNG_AMS667YR01" \
-            drivers/gpu/drm/panel || true
+          grep -R -n "config DRM_PANEL_SAMSUNG_AMS667YR01" \
+            drivers/gpu/drm/panel
 
           echo
           echo "===== GOODIX DRIVER CHECK ====="
-          grep -R -n "TOUCHSCREEN_GOODIX_GTX8" \
-            drivers/input/touchscreen || true
+          grep -R -n "config TOUCHSCREEN_GOODIX_GTX8" \
+            drivers/input/touchscreen
 
       - name: Configure kernel
         working-directory: kernel
@@ -98,7 +113,16 @@ jobs:
           make O="$OUT_DIR" defconfig
 
           echo
-          echo "===== ENABLE BASE FEATURES ====="
+          echo "===== MERGE SM7150 CONFIG FRAGMENT ====="
+
+          scripts/kconfig/merge_config.sh \
+            -m \
+            -O "$OUT_DIR" \
+            "$OUT_DIR/.config" \
+            arch/arm64/configs/sm7150.config
+
+          echo
+          echo "===== ENABLE REQUIRED SWEET FEATURES ====="
 
           scripts/config --file "$OUT_DIR/.config" \
             --enable ARCH_QCOM \
@@ -107,6 +131,10 @@ jobs:
             --enable IOMMU_SUPPORT \
             --enable COMMON_CLK \
             --enable PM \
+            --enable QCOM_AOSS_QMP \
+            --enable QCOM_OCMEM \
+            --enable QCOM_LLCC \
+            --enable QCOM_COMMAND_DB \
             --enable REGULATOR \
             --enable GPIOLIB \
             --enable PINCTRL \
@@ -119,7 +147,6 @@ jobs:
             --enable DRM_KMS_HELPER \
             --enable DRM_GEM_SHMEM_HELPER \
             --enable DRM_MSM \
-            --enable DRM_MSM_KMS \
             --enable DRM_MSM_DSI \
             --enable DRM_PANEL \
             --enable BLK_DEV_INITRD \
@@ -130,56 +157,56 @@ jobs:
             --enable FW_LOADER
 
           echo
-          echo "===== OPTIONAL PANEL DRIVER ====="
+          echo "===== ENABLE SWEET PANEL ====="
 
-          if grep -R -q "config DRM_PANEL_SAMSUNG_AMS667YR01" \
-            drivers/gpu/drm/panel; then
-            scripts/config --file "$OUT_DIR/.config" \
-              --enable DRM_PANEL_SAMSUNG_AMS667YR01
-            echo "AMS667YR01 symbol found and enabled."
-          else
-            echo "WARNING: AMS667YR01 symbol not found."
-          fi
+          scripts/config --file "$OUT_DIR/.config" \
+            --enable DRM_PANEL_SAMSUNG_AMS667YR01
 
           echo
-          echo "===== OPTIONAL GOODIX GTX8 DRIVER ====="
+          echo "===== ENABLE GOODIX GTX8 ====="
 
-          if grep -R -q "config TOUCHSCREEN_GOODIX_GTX8" \
-            drivers/input/touchscreen; then
-            scripts/config --file "$OUT_DIR/.config" \
-              --enable TOUCHSCREEN_GOODIX_GTX8
-            echo "Goodix GTX8 symbol found and enabled."
-          else
-            echo "WARNING: Goodix GTX8 symbol not found."
-          fi
+          scripts/config --file "$OUT_DIR/.config" \
+            --enable TOUCHSCREEN_GOODIX_GTX8
 
           echo
-          echo "===== OLDDEFCONFIG ====="
+          echo "===== FINAL OLDDEFCONFIG ====="
+
           make O="$OUT_DIR" olddefconfig
 
           echo
           echo "===== FINAL CONFIGURATION ====="
+
           grep -E \
-            '^(CONFIG_ARCH_QCOM|CONFIG_OF|CONFIG_MODULES|CONFIG_IOMMU_SUPPORT|CONFIG_COMMON_CLK|CONFIG_PM|CONFIG_REGULATOR|CONFIG_GPIOLIB|CONFIG_I2C|CONFIG_INPUT|CONFIG_INPUT_TOUCHSCREEN|CONFIG_BACKLIGHT_CLASS_DEVICE|CONFIG_DRM=|CONFIG_DRM_KMS_HELPER|CONFIG_DRM_GEM_SHMEM_HELPER|CONFIG_DRM_MSM|CONFIG_DRM_PANEL|CONFIG_DRM_PANEL_SAMSUNG_AMS667YR01|CONFIG_TOUCHSCREEN_GOODIX_GTX8|CONFIG_BLK_DEV_INITRD|CONFIG_DEVTMPFS|CONFIG_EXT4_FS|CONFIG_TMPFS)' \
+            '^(CONFIG_ARCH_QCOM|CONFIG_OF|CONFIG_MODULES|CONFIG_IOMMU_SUPPORT|CONFIG_COMMON_CLK|CONFIG_PM|CONFIG_QCOM_AOSS_QMP|CONFIG_QCOM_OCMEM|CONFIG_QCOM_LLCC|CONFIG_QCOM_COMMAND_DB|CONFIG_DRM=|CONFIG_DRM_MSM=|CONFIG_DRM_MSM_KMS=|CONFIG_DRM_MSM_DSI=|CONFIG_DRM_PANEL_SAMSUNG_AMS667YR01=|CONFIG_TOUCHSCREEN_GOODIX_GTX8=)' \
             "$OUT_DIR/.config" || true
 
           echo
           echo "===== DRM MSM KCONFIG DEPENDENCIES ====="
-          grep -n -A45 '^config DRM_MSM$' \
-            drivers/gpu/drm/msm/Kconfig || true
+
+          grep -n -A30 '^config DRM_MSM$' \
+            drivers/gpu/drm/msm/Kconfig
 
           echo
           echo "===== DRM MSM CONFIG STATE ====="
-          grep -E '^CONFIG_DRM_MSM=|^# CONFIG_DRM_MSM is not set' \
+
+          grep -E \
+            '^(CONFIG_DRM_MSM=|# CONFIG_DRM_MSM is not set)' \
             "$OUT_DIR/.config" || true
 
           if ! grep -q '^CONFIG_DRM_MSM=y$' "$OUT_DIR/.config"; then
             echo
             echo "ERROR: CONFIG_DRM_MSM is not built-in."
-            echo "The Kconfig dependencies or architecture selection"
-            echo "prevented DRM MSM from being enabled."
+            echo "Checking dependencies..."
+
+            grep -E \
+              '^(CONFIG_ARCH_QCOM|CONFIG_DRM=|CONFIG_COMMON_CLK|CONFIG_IOMMU_SUPPORT|CONFIG_OF|CONFIG_PM|CONFIG_QCOM_AOSS_QMP|CONFIG_QCOM_OCMEM|CONFIG_QCOM_LLCC|CONFIG_QCOM_COMMAND_DB)' \
+              "$OUT_DIR/.config" || true
+
             exit 1
           fi
+
+          echo
+          echo "PASS: CONFIG_DRM_MSM=y"
 
           echo
           echo "===== REQUIRED CONFIG VALIDATION ====="
@@ -187,14 +214,17 @@ jobs:
           for symbol in \
             ARCH_QCOM \
             OF \
-            I2C \
-            INPUT \
-            INPUT_TOUCHSCREEN \
+            MODULES \
+            IOMMU_SUPPORT \
+            COMMON_CLK \
+            PM \
             DRM \
             DRM_MSM \
-            DRM_MSM_KMS \
             DRM_MSM_DSI \
-            DRM_PANEL
+            DRM_PANEL \
+            DRM_PANEL_SAMSUNG_AMS667YR01 \
+            TOUCHSCREEN_GOODIX_GTX8 \
+            BACKLIGHT_CLASS_DEVICE
           do
             if grep -q "^CONFIG_${symbol}=y$" "$OUT_DIR/.config"; then
               echo "PASS: CONFIG_${symbol}=y"
@@ -203,6 +233,9 @@ jobs:
               exit 1
             fi
           done
+
+          echo
+          echo "===== SAVE FINAL KERNEL CONFIG ====="
 
           cp "$OUT_DIR/.config" ../kernel.config
 
@@ -234,13 +267,15 @@ jobs:
           IMAGE="$OUT_DIR/arch/arm64/boot/Image"
 
           echo "===== IMAGE VALIDATION ====="
+
           test -s "$IMAGE"
           file "$IMAGE"
           ls -lh "$IMAGE"
 
           echo
-          echo "===== IMAGE SIZE ====="
-          stat -c '%n : %s bytes' "$IMAGE"
+          echo "===== IMAGE SHA256 ====="
+
+          sha256sum "$IMAGE"
 
       - name: Validate Sweet DTB
         working-directory: kernel
@@ -254,8 +289,13 @@ jobs:
           if [ ! -s "$DTB" ]; then
             echo "ERROR: Sweet DTB not found:"
             echo "$DTB"
+
+            echo
+            echo "===== AVAILABLE DTB FILES ====="
+
             find "$OUT_DIR/arch/arm64/boot/dts" \
               -type f -name '*.dtb' -print
+
             exit 1
           fi
 
@@ -263,172 +303,48 @@ jobs:
           ls -lh "$DTB"
 
           echo
-          echo "===== DTB DECOMPILE CHECK ====="
+          echo "===== DTB SHA256 ====="
 
-          dtc -I dtb -O dts "$DTB" \
-            -o ../sweet-audit.dts
-
-          test -s ../sweet-audit.dts
-          echo "PASS: DTB can be decompiled."
+          sha256sum "$DTB"
 
           echo
-          echo "===== SWEET COMPATIBLE ====="
-          grep -n -m 10 -i "xiaomi,sweet\|sweet" \
-            ../sweet-audit.dts || true
+          echo "===== DTB COMPATIBLE ====="
 
-      - name: Discover and validate Sweet DTBO
-        working-directory: kernel
+          fdtget "$DTB" / compatible
+
+      - name: Prepare Native UBports artifacts
         run: |
           set -euo pipefail
 
-          mkdir -p ../artifacts/dtbo
+          mkdir -p dist
 
-          echo "===== SEARCH DTBO ====="
+          cp kernel/out/arch/arm64/boot/Image \
+            dist/Image
 
-          find "$OUT_DIR/arch/arm64/boot/dts" \
-            -type f -name '*sweet*.dtbo' -print \
-            | tee ../build-logs/sweet-dtbo-list.txt
+          cp kernel/out/arch/arm64/boot/dts/qcom/sm7150-xiaomi-sweet.dtb \
+            dist/sm7150-xiaomi-sweet.dtb
 
-          COUNT=$(find "$OUT_DIR/arch/arm64/boot/dts" \
-            -type f -name '*sweet*.dtbo' | wc -l)
+          cp kernel.config \
+            dist/kernel.config
 
-          if [ "$COUNT" -eq 0 ]; then
-            echo "ERROR: No Sweet DTBO generated."
-            echo "All generated DTBO files:"
-            find "$OUT_DIR/arch/arm64/boot/dts" \
-              -type f -name '*.dtbo' -print
-            exit 1
-          fi
+          cp build-logs/kernel-build.log \
+            dist/kernel-build.log
 
-          echo
-          echo "===== COPY AND VALIDATE DTBO ====="
+          echo "===== FINAL ARTIFACTS ====="
 
-          while IFS= read -r -d '' DTBO; do
-            NAME=$(basename "$DTBO")
-
-            cp "$DTBO" "../artifacts/dtbo/$NAME"
-
-            echo
-            echo "Checking: $NAME"
-            file "$DTBO"
-
-            dtc -I dtb -O dts "$DTBO" \
-              -o "/tmp/${NAME}.dts"
-
-            test -s "/tmp/${NAME}.dts"
-            echo "PASS: $NAME"
-          done < <(
-            find "$OUT_DIR/arch/arm64/boot/dts" \
-              -type f -name '*sweet*.dtbo' -print0
-          )
-
-      - name: Prepare kernel artifacts
-        working-directory: kernel
-        run: |
-          set -euo pipefail
-
-          mkdir -p ../artifacts
-
-          echo "===== COPY KERNEL IMAGE ====="
-          cp "$OUT_DIR/arch/arm64/boot/Image" \
-            ../artifacts/Image
+          ls -lh dist/
 
           echo
-          echo "===== COPY SWEET DTB ====="
-          cp "$OUT_DIR/arch/arm64/boot/dts/qcom/$DEVICE_DTB" \
-            ../artifacts/
+          echo "===== SHA256 ====="
 
-          echo
-          echo "===== COPY CONFIGURATION ====="
-          cp "$OUT_DIR/.config" ../artifacts/kernel.config
+          sha256sum dist/Image \
+            dist/sm7150-xiaomi-sweet.dtb \
+            dist/kernel.config
 
-          echo
-          echo "===== COPY BUILD LOG ====="
-          cp ../build-logs/kernel-build.log \
-            ../artifacts/kernel-build.log
-
-          cp ../build-logs/sweet-dtbo-list.txt \
-            ../artifacts/ || true
-
-          echo
-          echo "===== OPTIONAL SYSTEM MAP ====="
-          if [ -s "$OUT_DIR/System.map" ]; then
-            cp "$OUT_DIR/System.map" ../artifacts/
-          fi
-
-          echo
-          echo "===== BUILD MANIFEST ====="
-
-          {
-            echo "Project: Native UBports Sweet"
-            echo "Device: Xiaomi Redmi Note 10 Pro"
-            echo "Codename: sweet"
-            echo "Kernel source: sm7150-mainline/linux"
-            echo "Kernel branch: v7.2"
-            echo "Kernel version: $(make kernelversion)"
-            echo "Architecture: arm64"
-            echo "Compiler: $(aarch64-linux-gnu-gcc --version | head -n 1)"
-            echo "Build date: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
-            echo
-            echo "Artifacts:"
-            find ../artifacts -type f -printf '%P : %s bytes\n' \
-              | sort
-          } > ../artifacts/MANIFEST.txt
-
-          echo
-          echo "===== SHA256 CHECKSUMS ====="
-
-          cd ../artifacts
-
-          find . -type f ! -name SHA256SUMS -print0 \
-            | sort -z \
-            | xargs -0 sha256sum > SHA256SUMS
-
-          echo
-          echo "===== CREATE ZIP ====="
-
-          cd ..
-          zip -r NATIVE-UBPORT-SWEET-Image-DTB-DTBO.zip artifacts
-
-      - name: Final artifact validation
-        run: |
-          set -euo pipefail
-
-          echo "===== FINAL FILE CHECK ====="
-
-          test -s artifacts/Image
-          test -s "artifacts/$DEVICE_DTB"
-          test -s artifacts/kernel.config
-          test -s artifacts/kernel-build.log
-          test -s artifacts/MANIFEST.txt
-          test -s artifacts/SHA256SUMS
-          test -s NATIVE-UBPORT-SWEET-Image-DTB-DTBO.zip
-
-          echo
-          echo "===== ARTIFACT CONTENTS ====="
-          find artifacts -type f -printf '%P : %s bytes\n' | sort
-
-          echo
-          echo "===== CHECKSUM VALIDATION ====="
-          cd artifacts
-          sha256sum -c SHA256SUMS
-
-          echo
-          echo "===== ZIP VALIDATION ====="
-          cd ..
-          unzip -t NATIVE-UBPORT-SWEET-Image-DTB-DTBO.zip
-
-          echo
-          echo "SUCCESS: Native UBports Sweet artifacts validated."
-
-      - name: Upload Native UBports artifacts
+      - name: Upload Native UBports Sweet Image
         uses: actions/upload-artifact@v4
         with:
-          name: NATIVE-UBPORT-SWEET-Image-DTB-DTBO
-          path: |
-            artifacts/
-            NATIVE-UBPORT-SWEET-Image-DTB-DTBO.zip
-            sweet-audit.dts
+          name: NATIVE-UBPORT-SWEET-First-Image
+          path: dist/*
           if-no-files-found: error
-          compression-level: 6
-          retention-days: 30
+          retention-days: 14
