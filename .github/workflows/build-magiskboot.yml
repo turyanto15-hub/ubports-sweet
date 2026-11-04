@@ -1,0 +1,97 @@
+name: Build MagiskBoot ARM64
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-magiskboot-arm64
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build MagiskBoot for Sweet
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    env:
+      ANDROID_HOME: ${{ github.workspace }}/android-sdk
+      ANDROID_SDK_ROOT: ${{ github.workspace }}/android-sdk
+
+    steps:
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git python3 xz-utils file binutils
+
+      - name: Clone official Magisk source
+        run: |
+          git clone --recurse-submodules --depth 1 \
+            https://github.com/topjohnwu/Magisk.git Magisk
+
+      - name: Prepare Android SDK directory
+        run: |
+          mkdir -p "$ANDROID_HOME"
+
+      - name: Install Magisk ONDK
+        working-directory: Magisk
+        run: |
+          python3 build.py ndk
+
+      - name: Configure ARM64 only
+        working-directory: Magisk
+        run: |
+          printf 'abiList=arm64-v8a\n' > config.prop
+
+      - name: Build MagiskBoot
+        working-directory: Magisk
+        run: |
+          python3 build.py -r -v native magiskboot
+
+      - name: Validate ARM64 binary
+        working-directory: Magisk
+        run: |
+          set -e
+
+          BIN="native/out/arm64-v8a/magiskboot"
+
+          test -s "$BIN"
+          test -x "$BIN"
+
+          echo "===== MAGISKBOOT FILE ====="
+          file "$BIN"
+
+          echo
+          echo "===== ELF ARCHITECTURE ====="
+          readelf -h "$BIN" | grep -E 'Class:|Machine:'
+
+          readelf -h "$BIN" | grep -q 'AArch64'
+
+          echo
+          echo "===== SHA256 ====="
+          sha256sum "$BIN"
+
+          mkdir -p ../magiskboot-artifact
+          cp "$BIN" ../magiskboot-artifact/magiskboot
+
+          {
+            echo "Purpose: Android boot image inspection"
+            echo "Architecture: ARM64 / AArch64"
+            echo "Magisk repository: https://github.com/topjohnwu/Magisk"
+            echo "Magisk commit: $(git rev-parse HEAD)"
+            echo "Build date UTC: $(date -u '+%Y-%m-%d %H:%M:%S')"
+            echo "Build target: magiskboot"
+          } > ../magiskboot-artifact/manifest.txt
+
+          cd ../magiskboot-artifact
+          sha256sum magiskboot manifest.txt > SHA256SUMS
+
+      - name: Upload MagiskBoot artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MAGISKBOOT-ANDROID-ARM64
+          path: magiskboot-artifact/
+          if-no-files-found: error
+          retention-days: 30
