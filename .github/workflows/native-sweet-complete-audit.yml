@@ -147,6 +147,7 @@ jobs:
             --disable ARM64_PA_BITS_52
 
           echo
+
           echo "===== STEP 4: OLDDEFCONFIG ====="
 
           make O="$OUT" \
@@ -155,6 +156,25 @@ jobs:
             olddefconfig
 
           CONFIG="$OUT/.config"
+
+          echo
+          echo "===== STEP 4A: ENABLE OVERLAYFS BUILT-IN ====="
+
+          "$KERNEL/scripts/config" \
+            --file "$CONFIG" \
+            --enable OVERLAY_FS
+
+          make O="$OUT" \
+            ARCH="$ARCH" \
+            CROSS_COMPILE="$CROSS_COMPILE" \
+            olddefconfig
+
+          if ! grep -qx 'CONFIG_OVERLAY_FS=y' "$CONFIG"; then
+            echo "FATAL: CONFIG_OVERLAY_FS is not built-in"
+            exit 1
+          fi
+
+          echo "PASS: CONFIG_OVERLAY_FS=y"
 
           echo
           echo "===== STEP 5: VALIDATE ARM64 MEMORY CONFIG ====="
@@ -203,7 +223,8 @@ jobs:
             CONFIG_DRM_MIPI_DSI \
             CONFIG_DRM_PANEL_SAMSUNG_AMS667YR01 \
             CONFIG_TOUCHSCREEN_GOODIX_GTX8 \
-            CONFIG_BLK_DEV_INITRD
+            CONFIG_BLK_DEV_INITRD \
+            CONFIG_OVERLAY_FS
           do
             require_config "$c"
           done
@@ -212,7 +233,7 @@ jobs:
           echo "===== FINAL CONFIG SUMMARY ====="
 
           grep -E \
-            'CONFIG_LOCALVERSION=|CONFIG_ARM64_VA_BITS=|CONFIG_ARM64_LPA2=|CONFIG_DRM_MSM=|CONFIG_DRM_MIPI_DSI=|CONFIG_DRM_PANEL_SAMSUNG_AMS667YR01=|CONFIG_TOUCHSCREEN_GOODIX_GTX8=' \
+            'CONFIG_LOCALVERSION=|CONFIG_ARM64_VA_BITS=|CONFIG_ARM64_LPA2=|CONFIG_DRM_MSM=|CONFIG_DRM_MIPI_DSI=|CONFIG_DRM_PANEL_SAMSUNG_AMS667YR01=|CONFIG_TOUCHSCREEN_GOODIX_GTX8=|CONFIG_OVERLAY_FS=' \
             "$CONFIG" || true
 
           echo
@@ -254,66 +275,6 @@ jobs:
 
           echo "Sweet DTB compatible: PASS"
 
-      - name: Package complete audit
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          PACKAGE="$GITHUB_WORKSPACE/package/NATIVE-UBPORT-SWEET"
-
-          mkdir -p "$PACKAGE"
-
-          cp "$OUT/arch/arm64/boot/Image" "$PACKAGE/"
-          cp "$OUT/arch/arm64/boot/dts/qcom/sm7150-xiaomi-sweet.dtb" "$PACKAGE/"
-          cp "$OUT/System.map" "$PACKAGE/"
-          cp "$OUT/.config" "$PACKAGE/kernel.config"
-          cp "$GITHUB_WORKSPACE/logs/kernel-build.log" "$PACKAGE/"
-
-          cat > "$PACKAGE/DTBO_STATUS.txt" <<'EOF'
-          DTBO AUDIT STATUS
-          =================
-          Sweet-specific DTBO target: NOT DECLARED
-          Sweet DTBO: NOT BUILT
-          DTB Sweet built and validated independently.
-          Separate DTBO requirement must be determined
-          from the device boot chain before integration.
-          EOF
-
-          cat > "$PACKAGE/manifest.txt" <<EOF
-          NATIVE UBPORT SWEET - CLEAN BUILD AUDIT
-          =======================================
-
-          Device: Xiaomi Redmi Note 10 Pro
-          Codename: sweet
-          SoC: Qualcomm SM7150
-          Architecture: ARM64
-
-          Repository: $SOURCE_REPO
-          Intended branch: $SOURCE_BRANCH
-          Source commit: $EXPECTED_COMMIT
-
-          Kernel version:
-          $(cd "$KERNEL" && make kernelversion)
-
-          Compiler:
-          $(aarch64-linux-gnu-gcc -dumpfullversion)
-
-          Device Tree Compiler:
-          $(dtc --version)
-
-          Build system: GitHub Actions Ubuntu 24.04
-          Configuration: defconfig + sm7150.config
-          ARM64 pages: 4K
-          ARM64 VA_BITS: 39
-          ARM64 LPA2: disabled
-
-          Build targets:
-          Image
-          sm7150-xiaomi-sweet.dtb
-
-          Audit:
-          Source commit verified.
-          ARM64 configuration validated.
           Final configuration validated.
           Image generated.
           Sweet DTB generated.
