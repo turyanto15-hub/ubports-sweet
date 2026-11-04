@@ -157,6 +157,7 @@ jobs:
 
           echo "PASS: GZIP VALID"
 
+
       - name: Validate archive
         shell: bash
         run: |
@@ -164,19 +165,33 @@ jobs:
 
           OUT="$GITHUB_WORKSPACE/output"
 
-          gzip -dc "$OUT/initramfs.cpio.gz" \
-            | cpio -it
+          echo "===== VALIDATE INITRAMFS ====="
+
+          gzip -t "$OUT/initramfs.cpio.gz"
+
+          mkdir -p "$OUT/verify"
 
           gzip -dc "$OUT/initramfs.cpio.gz" \
-            | cpio -it \
-            | grep -qx './init'
+            | (cd "$OUT/verify" && cpio -idm --quiet)
 
-          gzip -dc "$OUT/initramfs.cpio.gz" \
-            | cpio -it \
-            | grep -qx './bin/busybox'
+          echo "===== CHECK REQUIRED FILES ====="
+
+          test -f "$OUT/verify/init"
+          test -x "$OUT/verify/init"
+          test -f "$OUT/verify/bin/busybox"
+          test -x "$OUT/verify/bin/busybox"
 
           echo "PASS: INIT EXISTS"
           echo "PASS: BUSYBOX EXISTS"
+
+          echo "===== CHECK BUSYBOX APPLETS ====="
+
+          for applet in sh mount mkdir mknod sleep uname dmesg; do
+            test -L "$OUT/verify/bin/$applet"
+            echo "PASS: $applet"
+          done
+
+          echo "===== VALIDATION SUCCESS ====="
 
       - name: Generate audit report
         shell: bash
