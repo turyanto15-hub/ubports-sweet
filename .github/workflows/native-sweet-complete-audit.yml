@@ -236,6 +236,9 @@ jobs:
           echo "===== STEP 6: VALIDATE REQUIRED CONFIG ====="
 
           for c in \
+            CONFIG_INPUT \
+            CONFIG_INPUT_EVDEV \
+            CONFIG_INPUT_TOUCHSCREEN \
             CONFIG_ARM64 \
             CONFIG_ARCH_QCOM \
             CONFIG_OF \
