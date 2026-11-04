@@ -1,3 +1,4 @@
+
 name: Native UBports Sweet Complete Audit
 
 on:
@@ -15,13 +16,12 @@ jobs:
     name: Clean SM7150 Sweet Kernel Build
     runs-on: ubuntu-24.04
     timeout-minutes: 180
-
     env:
       ARCH: arm64
       CROSS_COMPILE: aarch64-linux-gnu-
       SOURCE_REPO: turyanto15-hub/linux-native
-      SOURCE_BRANCH: v7.2
-      EXPECTED_COMMIT: fd78d17954a86ea6ceb0c535e618ea129e09f8dd
+      SOURCE_BRANCH: sweet-dsc-slice-per-pkt
+      EXPECTED_COMMIT: 477b07522c115b2523e1d8a8f784e93b11a3054f
       DEVICE: Xiaomi Redmi Note 10 Pro
       CODENAME: sweet
       OUT: ${{ github.workspace }}/out
@@ -34,7 +34,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: turyanto15-hub/linux-native
-          ref: fd78d17954a86ea6ceb0c535e618ea129e09f8dd
+          ref: 477b07522c115b2523e1d8a8f784e93b11a3054f
           path: kernel
           fetch-depth: 1
 
@@ -46,7 +46,6 @@ jobs:
           cd "$KERNEL"
 
           ACTUAL_COMMIT=$(git rev-parse HEAD)
-
           echo "Repository: $SOURCE_REPO"
           echo "Intended branch: $SOURCE_BRANCH"
           echo "Expected commit: $EXPECTED_COMMIT"
@@ -78,7 +77,6 @@ jobs:
           set -euo pipefail
 
           sudo apt-get update
-
           sudo apt-get install -y \
             gcc-aarch64-linux-gnu \
             g++-aarch64-linux-gnu \
@@ -94,7 +92,6 @@ jobs:
 
           echo "===== DTC VERSION ====="
           dtc --version
-
           echo
           echo "DEPENDENCIES: PASS"
 
@@ -117,7 +114,6 @@ jobs:
           LOG="$GITHUB_WORKSPACE/logs/kernel-build.log"
 
           exec > >(tee "$LOG") 2>&1
-
           export ARCH="$ARCH"
           export CROSS_COMPILE="$CROSS_COMPILE"
           export KBUILD_BUILD_USER="ubports-audit"
@@ -260,9 +256,11 @@ jobs:
           grep -E \
             'CONFIG_LOCALVERSION=|CONFIG_ARM64_VA_BITS=|CONFIG_ARM64_LPA2=|CONFIG_DRM_MSM=|CONFIG_DRM_MIPI_DSI=|CONFIG_DRM_PANEL_SAMSUNG_AMS667YR01=|CONFIG_TOUCHSCREEN_GOODIX_GTX8=|CONFIG_OVERLAY_FS=' \
             "$CONFIG" || true
+
           grep -E \
             'CONFIG_LOCALVERSION=|CONFIG_ARM64_VA_BITS=|CONFIG_ARM64_LPA2=|CONFIG_INPUT_EVDEV=|CONFIG_DRM_MSM=|CONFIG_DRM_MIPI_DSI=|CONFIG_DRM_PANEL_SAMSUNG_AMS667YR01=|CONFIG_TOUCHSCREEN_GOODIX_GTX8=|CONFIG_OVERLAY_FS=' \
             "$CONFIG" || true
+
           echo
           echo "===== STEP 7: BUILD IMAGE AND DTB ====="
 
@@ -275,7 +273,6 @@ jobs:
           echo "===== VERIFY BUILD OUTPUTS ====="
 
           IMAGE="$OUT/arch/arm64/boot/Image"
-
           DTB="$OUT/arch/arm64/boot/dts/qcom/sm7150-xiaomi-sweet.dtb"
 
           test -s "$IMAGE"
@@ -335,7 +332,6 @@ jobs:
 
           cat > "$PACKAGE/DTBO_STATUS.txt" <<'EOF'
           DTBO BUILD STATUS: NOT BUILT
-
           This workflow builds:
           - ARM64 kernel Image
           - Xiaomi Redmi Note 10 Pro Sweet DTB
@@ -350,7 +346,6 @@ jobs:
 
           cat > "$PACKAGE/FINAL_AUDIT.txt" <<'EOF'
           NATIVE UBPORTS SWEET - FINAL KERNEL AUDIT
-
           Source identity: VALIDATED
           ARM64 architecture: VALIDATED
           ARM64 4K pages: VALIDATED
@@ -366,7 +361,6 @@ jobs:
           Sweet DTB compatible: VALIDATED
           System.map: GENERATED
           Kernel configuration: SAVED
-
           DTBO: NOT BUILT BY THIS WORKFLOW
 
           IMPORTANT:
@@ -395,7 +389,6 @@ jobs:
           Intended branch: $SOURCE_BRANCH
           Source commit: $EXPECTED_COMMIT
           Kernel version: $KERNEL_VERSION
-
           Compiler: GCC $GCC_VERSION
           Device Tree Compiler: $DTC_VERSION
 
@@ -415,7 +408,6 @@ jobs:
           Sweet DTB size: $DTB_SIZE bytes
 
           DTBO status: NOT BUILT
-
           Artifact purpose:
           Native UBports Sweet kernel Image and DTB audit.
           EOF
