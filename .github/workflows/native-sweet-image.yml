@@ -1,4 +1,3 @@
-
 name: Native UBports Sweet Kernel Build
 
 on:
@@ -21,22 +20,25 @@ jobs:
       ARCH: arm64
       CROSS_COMPILE: aarch64-linux-gnu-
       JOBS: 2
+      SOURCE_REPO: turyanto15-hub/linux-native
+      SOURCE_BRANCH: sweet-dsc-slice-per-pkt
+      EXPECTED_COMMIT: 477b07522c115b2523e1d8a8f784e93b11a3054f
 
     steps:
 
-      # 1. Checkout native kernel fork
+      # 1. Checkout pinned kernel source with DSC fix
       - name: Checkout native kernel
         uses: actions/checkout@v4
         with:
           repository: turyanto15-hub/linux-native
-          ref: v7.2
+          ref: 477b07522c115b2523e1d8a8f784e93b11a3054f
           path: kernel
           fetch-depth: 1
 
       # 2. Install build dependencies
       - name: Install build dependencies
         run: |
-          set -e
+          set -euo pipefail
 
           sudo apt-get update
 
@@ -67,17 +69,20 @@ jobs:
           echo "===== DTC VERSION ====="
           dtc --version
 
-      # 3. Verify native kernel source
+      # 3. Verify kernel source and pinned commit
       - name: Verify native kernel source
         working-directory: kernel
         run: |
-          set -e
+          set -euo pipefail
 
           echo "===== REPOSITORY ====="
           git remote -v
 
-          echo "===== COMMIT ====="
-          git log -1 --format='%H%n%s'
+          echo "===== SOURCE COMMIT ====="
+          ACTUAL_COMMIT="$(git rev-parse HEAD)"
+          echo "$ACTUAL_COMMIT"
+
+          test "$ACTUAL_COMMIT" = "$EXPECTED_COMMIT"
 
           echo "===== KERNEL VERSION ====="
           make kernelversion
@@ -88,17 +93,20 @@ jobs:
           echo "===== VERIFY SWEET DTS ====="
           test -s arch/arm64/boot/dts/qcom/sm7150-xiaomi-sweet.dts
 
-          echo "===== VERIFY DRIVER SOURCE ====="
+          echo "===== VERIFY SWEET DRIVERS ====="
           test -s drivers/input/touchscreen/goodix_gtx8.c
           test -s drivers/gpu/drm/panel/panel-samsung-ams667yr01.c
+
+          echo "===== VERIFY DSC SOURCE FIX ====="
+          grep -n "slice_per_pkt" drivers/gpu/drm/msm/dsi/dsi_host.c
 
           echo "NATIVE SOURCE VALIDATION: PASS"
 
       # 4. Initialize base kernel configuration
-      - name: Initialize kernel configuration
+      - name: Initialize base kernel configuration
         working-directory: kernel
         run: |
-          set -e
+          set -euo pipefail
 
           mkdir -p out
 
@@ -115,7 +123,7 @@ jobs:
       - name: Merge SM7150 configuration
         working-directory: kernel
         run: |
-          set -e
+          set -euo pipefail
 
           bash scripts/kconfig/merge_config.sh \
             -m \
@@ -132,11 +140,51 @@ jobs:
 
           echo "SM7150 CONFIGURATION MERGE: PASS"
 
-      # 6. Enable Sweet hardware drivers and build
+      # 6. Configure ARM64 memory layout
+      - name: Configure ARM64 4K VA39 PA48 without LPA2
+        working-directory: kernel
+        run: |
+          set -euo pipefail
+
+          scripts/config --file out/.config \
+            --enable ARM64_4K_PAGES \
+            --disable ARM64_16K_PAGES \
+            --disable ARM64_64K_PAGES \
+            --enable ARM64_VA_BITS_39 \
+            --disable ARM64_VA_BITS_48 \
+            --disable ARM64_VA_BITS_52 \
+            --enable ARM64_PA_BITS_48 \
+            --disable ARM64_PA_BITS_52 \
+            --disable ARM64_LPA2
+
+          make O=out \
+            ARCH=arm64 \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            olddefconfig
+
+          echo "===== VERIFY ARM64 CONFIGURATION ====="
+
+          grep -qx 'CONFIG_ARM64_4K_PAGES=y' out/.config
+          grep -qx 'CONFIG_ARM64_VA_BITS_39=y' out/.config
+          grep -qx 'CONFIG_ARM64_VA_BITS=39' out/.config
+          grep -qx 'CONFIG_ARM64_PA_BITS_48=y' out/.config
+          grep -qx 'CONFIG_ARM64_PA_BITS=48' out/.config
+
+          if grep -qE '^CONFIG_(ARM64_16K_PAGES|ARM64_64K_PAGES|ARM64_VA_BITS_48|ARM64_VA_BITS_52|ARM64_PA_BITS_52|ARM64_LPA2)=y$' out/.config; then
+            echo "ERROR: Incompatible ARM64 configuration detected"
+            exit 1
+          fi
+
+          echo "===== FINAL ARM64 SETTINGS ====="
+          grep -E '^CONFIG_ARM64_(4K_PAGES|VA_BITS_39|VA_BITS=|PA_BITS_48|PA_BITS=)' out/.config
+
+          echo "ARM64 4K / VA39 / PA48 / LPA2 DISABLED: PASS"
+
+      # 7. Enable Sweet hardware drivers
       - name: Enable Sweet hardware drivers
         working-directory: kernel
         run: |
-          set -e
+          set -euo pipefail
 
           scripts/config --file out/.config \
             --enable I2C \
@@ -162,17 +210,48 @@ jobs:
             '^(CONFIG_I2C|CONFIG_OF|CONFIG_GPIOLIB|CONFIG_REGULATOR|CONFIG_INPUT|CONFIG_DRM|CONFIG_DRM_MSM|CONFIG_DRM_MIPI_DSI|CONFIG_BACKLIGHT_CLASS_DEVICE|CONFIG_TOUCHSCREEN_GOODIX_GTX8|CONFIG_DRM_PANEL_SAMSUNG_AMS667YR01)=' \
             out/.config || true
 
-          echo "===== VALIDATE REQUIRED DRIVERS ====="
+          echo "===== VERIFY REQUIRED DRIVERS ====="
 
-          grep -q '^CONFIG_TOUCHSCREEN_GOODIX_GTX8=y$' out/.config
-          grep -q '^CONFIG_DRM_PANEL_SAMSUNG_AMS667YR01=y$' out/.config
-          grep -q '^CONFIG_DRM_MSM=y$' out/.config
-          grep -q '^CONFIG_DRM_MIPI_DSI=y$' out/.config
-          grep -q '^CONFIG_BACKLIGHT_CLASS_DEVICE=y$' out/.config
+          grep -qx 'CONFIG_TOUCHSCREEN_GOODIX_GTX8=y' out/.config
+          grep -qx 'CONFIG_DRM_PANEL_SAMSUNG_AMS667YR01=y' out/.config
+          grep -qx 'CONFIG_DRM_MSM=y' out/.config
+          grep -qx 'CONFIG_DRM_MIPI_DSI=y' out/.config
+          grep -qx 'CONFIG_BACKLIGHT_CLASS_DEVICE=y' out/.config
 
           echo "SWEET HARDWARE CONFIGURATION: PASS"
 
-      - name: Build native kernel and Sweet DTB
+      # 8. Final configuration validation
+      - name: Validate final kernel configuration
+        working-directory: kernel
+        run: |
+          set -euo pipefail
+
+          echo "===== FINAL ARM64 VALIDATION ====="
+
+          grep -qx 'CONFIG_ARM64_4K_PAGES=y' out/.config
+          grep -qx 'CONFIG_ARM64_VA_BITS_39=y' out/.config
+          grep -qx 'CONFIG_ARM64_VA_BITS=39' out/.config
+          grep -qx 'CONFIG_ARM64_PA_BITS_48=y' out/.config
+          grep -qx 'CONFIG_ARM64_PA_BITS=48' out/.config
+
+          if grep -qE '^CONFIG_(ARM64_16K_PAGES|ARM64_64K_PAGES|ARM64_VA_BITS_48|ARM64_VA_BITS_52|ARM64_PA_BITS_52|ARM64_LPA2)=y$' out/.config; then
+            echo "ERROR: ARM64 configuration changed unexpectedly"
+            exit 1
+          fi
+
+          echo "===== FINAL SWEET DRIVER VALIDATION ====="
+
+          grep -qx 'CONFIG_DRM_MSM=y' out/.config
+          grep -qx 'CONFIG_DRM_MIPI_DSI=y' out/.config
+          grep -qx 'CONFIG_DRM_PANEL_SAMSUNG_AMS667YR01=y' out/.config
+          grep -qx 'CONFIG_TOUCHSCREEN_GOODIX_GTX8=y' out/.config
+
+          cp out/.config kernel.config
+
+          echo "FINAL KERNEL CONFIGURATION: PASS"
+
+      # 9. Build native kernel Image and Sweet DTB
+      - name: Build native kernel Image and Sweet DTB
         working-directory: kernel
         run: |
           set -euo pipefail
@@ -181,6 +260,8 @@ jobs:
           echo "Architecture: $ARCH"
           echo "Compiler: $CROSS_COMPILE"
           echo "Jobs: $JOBS"
+          echo "Source branch: $SOURCE_BRANCH"
+          echo "Source commit: $EXPECTED_COMMIT"
 
           echo "===== BUILD START ====="
 
@@ -193,11 +274,11 @@ jobs:
 
           echo "NATIVE KERNEL BUILD: PASS"
 
-      # 7. Verify and package build outputs
-      - name: Verify build outputs
+      # 10. Verify build outputs
+      - name: Verify kernel build outputs
         working-directory: kernel
         run: |
-          set -e
+          set -euo pipefail
 
           IMAGE="out/arch/arm64/boot/Image"
           DTB="out/arch/arm64/boot/dts/qcom/sm7150-xiaomi-sweet.dtb"
@@ -212,9 +293,9 @@ jobs:
           ls -lh "$DTB"
           file "$DTB"
 
-          echo "===== VERIFY CONFIGURATION ====="
-          test -s out/.config
-          ls -lh out/.config
+          echo "===== VERIFY FINAL CONFIG ====="
+          test -s kernel.config
+          ls -lh kernel.config
 
           echo "===== VERIFY SYSTEM MAP ====="
           test -s out/System.map
@@ -224,18 +305,65 @@ jobs:
           test -s build.log
           ls -lh build.log
 
-          echo "===== ALL BUILD OUTPUTS VERIFIED ====="
+          echo "ALL BUILD OUTPUTS VERIFIED: PASS"
 
-      # Upload artifacts even if build fails
+      # 11. Package audit artifacts
+      - name: Package native Sweet Image artifacts
+        working-directory: kernel
+        run: |
+          set -euo pipefail
+
+          DEST="NATIVE-UBPORT-SWEET-IMAGE"
+
+          mkdir -p "$DEST"
+
+          cp out/arch/arm64/boot/Image "$DEST/Image"
+          cp out/arch/arm64/boot/dts/qcom/sm7150-xiaomi-sweet.dtb "$DEST/"
+          cp out/System.map "$DEST/System.map"
+          cp kernel.config "$DEST/kernel.config"
+          cp build.log "$DEST/kernel-build.log"
+
+          cat > "$DEST/manifest.txt" <<EOF
+          Project: Native UBports for Xiaomi Redmi Note 10 Pro
+          Device: sweet
+          SoC: Qualcomm SM7150
+          Architecture: ARM64
+          Kernel source: https://github.com/${SOURCE_REPO}
+          Source branch: ${SOURCE_BRANCH}
+          Source commit: ${EXPECTED_COMMIT}
+          Kernel version: $(make kernelversion)
+          Compiler: $(aarch64-linux-gnu-gcc --version | head -1)
+          Build targets: Image, sm7150-xiaomi-sweet.dtb
+          Page size: 4KB
+          Virtual address bits: 39
+          Physical address bits: 48
+          LPA2: Disabled
+          Build date UTC: $(date -u '+%Y-%m-%d %H:%M:%S')
+          Purpose: Native UBports kernel Image build and audit
+          EOF
+
+          (
+            cd "$DEST"
+            sha256sum Image sm7150-xiaomi-sweet.dtb System.map kernel.config kernel-build.log manifest.txt > SHA256SUMS
+          )
+
+          zip -r NATIVE-UBPORT-SWEET-IMAGE.zip "$DEST"
+
+          echo "===== PACKAGE CONTENTS ====="
+          ls -lh "$DEST"
+          ls -lh NATIVE-UBPORT-SWEET-IMAGE.zip
+
+          echo "ARTIFACT PACKAGE: PASS"
+
+      # 12. Upload artifacts even if a later step fails
       - name: Upload native Sweet kernel artifacts
-        if: always()
         uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: NATIVE-UBPORT-SWEET-Image-and-DTB
-          if-no-files-found: warn
+          name: NATIVE-UBPORT-SWEET-IMAGE
           path: |
+            kernel/NATIVE-UBPORT-SWEET-IMAGE/
+            kernel/NATIVE-UBPORT-SWEET-IMAGE.zip
             kernel/build.log
-            kernel/out/.config
-            kernel/out/System.map
-            kernel/out/arch/arm64/boot/Image
-            kernel/out/arch/arm64/boot/dts/qcom/sm7150-xiaomi-sweet.dtb
+          if-no-files-found: warn
+          retention-days: 14
