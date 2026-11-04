@@ -38,7 +38,11 @@ jobs:
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig
 
           sed -i \
-            's/^# CONFIG_STATIC is not set/CONFIG_STATIC=y/' .config
+            -e 's/^# CONFIG_STATIC is not set/CONFIG_STATIC=y/' \
+            -e 's/^CONFIG_TC=y/# CONFIG_TC is not set/' \
+            .config
+
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
 
           grep -q '^CONFIG_STATIC=y$' .config
 
