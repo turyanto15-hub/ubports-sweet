@@ -1,0 +1,258 @@
+
+name: Native UBports Sweet Diagnostic Initramfs
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-sweet-initramfs
+  cancel-in-progress: true
+
+jobs:
+  build-initramfs:
+    name: Build Sweet Diagnostic Initramfs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update
+          sudo apt-get install -y \
+            busybox-static \
+            cpio \
+            gzip \
+            file \
+            zip
+
+          busybox --help | head -3
+          cpio --version | head -1
+
+      - name: Prepare initramfs directories
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ROOT="$GITHUB_WORKSPACE/initramfs-root"
+          mkdir -p "$ROOT"/{bin,dev,proc,sys,run,tmp,root,etc}
+
+          chmod 1777 "$ROOT/tmp"
+
+          BUSYBOX="$(command -v busybox)"
+
+          test -s "$BUSYBOX"
+
+          cp "$BUSYBOX" "$ROOT/bin/busybox"
+          chmod 0755 "$ROOT/bin/busybox"
+
+          echo "===== BUSYBOX APPLETS ====="
+
+          for applet in \
+            sh mount mkdir mknod sleep \
+            setsid cttyhack cat uname dmesg
+          do
+            if ! "$ROOT/bin/busybox" --list | grep -qx "$applet"; then
+              echo "FATAL: Missing applet: $applet"
+              exit 1
+            fi
+
+            ln -s busybox "$ROOT/bin/$applet"
+            echo "PASS: $applet"
+          done
+
+      - name: Create Native init script
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ROOT="$GITHUB_WORKSPACE/initramfs-root"
+
+          cat > "$ROOT/init" <<'INIT'
+          #!/bin/sh
+
+          export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+
+          echo
+          echo "===================================="
+          echo " NATIVE UBPORTS SWEET INITRAMFS"
+          echo " Xiaomi Redmi Note 10 Pro"
+          echo "===================================="
+
+          mount -t proc proc /proc || true
+          mount -t sysfs sysfs /sys || true
+          mount -t devtmpfs devtmpfs /dev || true
+
+          mkdir -p /dev/pts /run /tmp
+
+          mount -t devpts devpts /dev/pts || true
+
+          if [ ! -c /dev/console ]; then
+            mknod -m 600 /dev/console c 5 1 || true
+          fi
+
+          if [ ! -c /dev/null ]; then
+            mknod -m 666 /dev/null c 1 3 || true
+          fi
+
+          echo "Sweet diagnostic init started" > /dev/kmsg 2>/dev/null || true
+
+          echo
+          echo "===== KERNEL INFORMATION ====="
+          uname -a
+
+          echo
+          echo "===== KERNEL COMMAND LINE ====="
+          cat /proc/cmdline
+
+          echo
+          echo "===== MEMORY INFORMATION ====="
+          cat /proc/meminfo
+
+          echo
+          echo "===== BLOCK DEVICES ====="
+          cat /proc/partitions
+
+          echo
+          echo "===== INITRAMFS READY ====="
+
+          echo "Diagnostic shell starting..." > /dev/kmsg 2>/dev/null || true
+
+          exec setsid cttyhack sh
+
+          INIT
+
+          chmod 0755 "$ROOT/init"
+
+          test -x "$ROOT/init"
+
+      - name: Generate initramfs archive
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ROOT="$GITHUB_WORKSPACE/initramfs-root"
+          OUT="$GITHUB_WORKSPACE/output"
+
+          mkdir -p "$OUT"
+
+          cd "$ROOT"
+
+          find . -print0 \
+            | sort -z \
+            | cpio --null -o --format=newc \
+            | gzip -n -9 > "$OUT/initramfs.cpio.gz"
+
+          test -s "$OUT/initramfs.cpio.gz"
+
+          echo "===== INITRAMFS FILE ====="
+          file "$OUT/initramfs.cpio.gz"
+
+          gzip -t "$OUT/initramfs.cpio.gz"
+
+          echo "PASS: GZIP VALID"
+
+      - name: Validate archive
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          OUT="$GITHUB_WORKSPACE/output"
+
+          gzip -dc "$OUT/initramfs.cpio.gz" \
+            | cpio -it
+
+          gzip -dc "$OUT/initramfs.cpio.gz" \
+            | cpio -it \
+            | grep -qx './init'
+
+          gzip -dc "$OUT/initramfs.cpio.gz" \
+            | cpio -it \
+            | grep -qx './bin/busybox'
+
+          echo "PASS: INIT EXISTS"
+          echo "PASS: BUSYBOX EXISTS"
+
+      - name: Generate audit report
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          OUT="$GITHUB_WORKSPACE/output"
+          ROOT="$GITHUB_WORKSPACE/initramfs-root"
+
+          cat > "$OUT/INITRAMFS_AUDIT.txt" <<'EOF'
+          NATIVE UBPORTS SWEET
+          DIAGNOSTIC INITRAMFS AUDIT
+
+          Device: Xiaomi Redmi Note 10 Pro
+          Codename: sweet
+          Architecture: ARM64
+
+          Init system: BusyBox
+          PID 1: /init
+          Archive: newc
+          Compression: gzip
+
+          Included:
+          - BusyBox static
+          - /init
+          - proc mount support
+          - sysfs mount support
+          - devtmpfs mount support
+          - diagnostic shell
+
+          Purpose:
+          Initial kernel and initramfs bring-up.
+
+          IMPORTANT:
+          This is NOT a complete Ubuntu Touch rootfs.
+          No device flashing is authorized by this build.
+          EOF
+
+          echo "===== INIT SCRIPT ====="
+          sed -n '1,120p' "$ROOT/init"
+
+          echo
+          echo "===== INITRAMFS SIZE ====="
+          ls -lh "$OUT/initramfs.cpio.gz"
+
+          cd "$OUT"
+
+          sha256sum \
+            initramfs.cpio.gz \
+            INITRAMFS_AUDIT.txt > SHA256SUMS
+
+          sha256sum -c SHA256SUMS
+
+      - name: Package artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$GITHUB_WORKSPACE/output"
+
+          zip -9 \
+            "$GITHUB_WORKSPACE/NATIVE-UBPORT-SWEET-Diagnostic-Initramfs.zip" \
+            initramfs.cpio.gz \
+            INITRAMFS_AUDIT.txt \
+            SHA256SUMS
+
+          test -s \
+            "$GITHUB_WORKSPACE/NATIVE-UBPORT-SWEET-Diagnostic-Initramfs.zip"
+
+          echo "===== FINAL RESULT ====="
+          ls -lh "$GITHUB_WORKSPACE/NATIVE-UBPORT-SWEET-Diagnostic-Initramfs.zip"
+
+      - name: Upload initramfs artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NATIVE-UBPORT-SWEET-Diagnostic-Initramfs
+          path: NATIVE-UBPORT-SWEET-Diagnostic-Initramfs.zip
+          if-no-files-found: error
+          retention-days: 30
