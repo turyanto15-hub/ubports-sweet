@@ -159,6 +159,7 @@ jobs:
           scripts/config \
             --file "$OUT/.config" \
             --enable DRM_MIPI_DSI \
+            --enable INPUT_EVDEV \
             --enable ARM64_4K_PAGES \
             --enable ARM64_VA_BITS_39 \
             --disable ARM64_VA_BITS_48 \
