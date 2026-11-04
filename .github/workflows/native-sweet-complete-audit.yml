@@ -261,29 +261,19 @@ jobs:
 
           echo
           echo "===== VERIFY IMAGE FORMAT ====="
-
           file "$OUT/arch/arm64/boot/Image"
 
           echo
           echo "===== VERIFY SWEET DTB ====="
-
           dtc -I dtb -O dts "$DTB" \
-            -o "$GITHUB_WORKSPACE/logs/sweet-audit.dts"
+          -o "$GITHUB_WORKSPACE/logs/sweet-audit.dts"
 
           grep -q 'xiaomi,sweet' \
-            "$GITHUB_WORKSPACE/logs/sweet-audit.dts"
+          "$GITHUB_WORKSPACE/logs/sweet-audit.dts"
 
           echo "Sweet DTB compatible: PASS"
 
-          Final configuration validated.
-          Image generated.
-          Sweet DTB generated.
-          SHA256 checksums generated.
-
-          WARNING:
-          Successful compilation does not guarantee
-          that the kernel can boot on the device.
-          EOF
+          cat > "$PACKAGE/FINAL_AUDIT.txt" <<'EOF'
 
           echo
           echo "===== GENERATE CHECKSUMS ====="
@@ -291,13 +281,14 @@ jobs:
           cd "$PACKAGE"
 
           sha256sum \
-            Image \
-            sm7150-xiaomi-sweet.dtb \
-            kernel.config \
-            System.map \
-            kernel-build.log \
-            DTBO_STATUS.txt \
-            manifest.txt > SHA256SUMS
+          Image \
+          sm7150-xiaomi-sweet.dtb \
+          kernel.config \
+          System.map \
+          kernel-build.log \
+          DTBO_STATUS.txt \
+          manifest.txt \
+          FINAL_AUDIT.txt > SHA256SUMS
 
           sha256sum -c SHA256SUMS
 
@@ -307,14 +298,23 @@ jobs:
           cd "$GITHUB_WORKSPACE/package"
 
           zip -qr \
-            "$GITHUB_WORKSPACE/NATIVE-UBPORT-SWEET-Complete-Audit.zip" \
-            NATIVE-UBPORT-SWEET
+          "$GITHUB_WORKSPACE/NATIVE-UBPORT-SWEET-Complete-Audit.zip" \
+          NATIVE-UBPORT-SWEET
+
+          test -s "$GITHUB_WORKSPACE/NATIVE-UBPORT-SWEET-Complete-Audit.zip"
+
+          echo
+          echo "===== FINAL PACKAGE CHECK ====="
+
+          ls -lh "$GITHUB_WORKSPACE/NATIVE-UBPORT-SWEET-Complete-Audit.zip"
+
+          echo
+          echo "===== ALL CHECKS PASS ====="
 
       - name: Upload complete audit artifact
         uses: actions/upload-artifact@v4
         with:
           name: NATIVE-UBPORT-SWEET-Complete-Audit
-          path: |
-            NATIVE-UBPORT-SWEET-Complete-Audit.zip
+          path: NATIVE-UBPORT-SWEET-Complete-Audit.zip
           if-no-files-found: error
           retention-days: 30
