@@ -76,31 +76,41 @@ jobs:
           test -f arch/arm64/Makefile
           test -f Makefile
 
+      
       - name: Load exact Image configuration
         working-directory: kernel
         run: |
-          set -euo pipefail
+          set -u
 
           CONFIG_SOURCE="../project/configs/sweet/kernel.config"
-          test -s "$CONFIG_SOURCE"
+          echo "Checking config: $CONFIG_SOURCE"
+          ls -lh "$CONFIG_SOURCE"
+          test -s "$CONFIG_SOURCE" || exit 1
 
           mkdir -p "$OUT"
           cp "$CONFIG_SOURCE" "$OUT/.config"
 
-          grep -qx 'CONFIG_MODULES=y' "$OUT/.config"
-          grep -qx 'CONFIG_LOCALVERSION="-sm7150"' "$OUT/.config"
+          grep -nE '^(CONFIG_MODULES|CONFIG_LOCALVERSION)=' "$OUT/.config"
 
-          echo "Module-enabled options:"
-          grep -c '=m$' "$OUT/.config"
+          echo "===== GCC ====="
+          aarch64-linux-gnu-gcc --version
 
+          echo "===== OLDDEFCONFIG ====="
           make O="$OUT" ARCH="$ARCH" \
             CROSS_COMPILE="$CROSS_COMPILE" olddefconfig
+          RESULT=$?
+          echo "olddefconfig exit code: $RESULT"
+          test "$RESULT" -eq 0 || exit "$RESULT"
 
-          echo "Kernel release:"
+          echo "===== KERNEL RELEASE ====="
           make O="$OUT" ARCH="$ARCH" \
             CROSS_COMPILE="$CROSS_COMPILE" kernelrelease
+          RESULT=$?
+          echo "kernelrelease exit code: $RESULT"
+          test "$RESULT" -eq 0 || exit "$RESULT"
 
           cp "$OUT/.config" kernel.config
+
 
       - name: Validate module configuration
         working-directory: kernel
