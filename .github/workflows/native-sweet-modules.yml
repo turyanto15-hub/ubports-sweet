@@ -69,7 +69,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          CONFIG_SOURCE="../project/configs/sweet/kernel.config"
+          CONFIG_SOURCE="../configs/sweet/kernel.config"
           test -s "$CONFIG_SOURCE"
 
           mkdir -p "$OUT"
