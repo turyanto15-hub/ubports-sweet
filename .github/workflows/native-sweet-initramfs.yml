@@ -1,4 +1,5 @@
-name: Native UBports Sweet Diagnostic Initramfs ARM64
+
+name: Native UBports Sweet Diagnostic Initramfs
 
 on:
   workflow_dispatch:
@@ -12,12 +13,14 @@ concurrency:
 
 jobs:
   build-initramfs:
+    name: Build ARM64 Diagnostic Initramfs
     runs-on: ubuntu-24.04
     timeout-minutes: 60
 
     steps:
       - name: Install dependencies
         run: |
+          set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y \
             build-essential \
@@ -42,33 +45,30 @@ jobs:
             -e 's/^CONFIG_TC=y/# CONFIG_TC is not set/' \
             .config
 
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig
-
-          sed -i \
-            -e 's/^# CONFIG_STATIC is not set/CONFIG_STATIC=y/' \
-            -e 's/^CONFIG_TC=y/# CONFIG_TC is not set/' \
-            .config
-
           grep -q '^CONFIG_STATIC=y$' .config
 
-          echo "===== VERIFY BUSYBOX CONFIG ====="
-          grep -E 'CONFIG_STATIC=|CONFIG_TC=' .config
+          echo "===== BUSYBOX CONFIG ====="
+          grep -E 'CONFIG_STATIC=|CONFIG_TC=' .config || true
 
-          echo "===== BUILD BUSYBOX ARM64 ====="
+          echo "===== BUILD BUSYBOX ====="
           make -j2 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
 
-          grep -q '^CONFIG_STATIC=y$' .config
-
-          make -j2 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
-
+          test -s busybox
           file busybox
-          aarch64-linux-gnu-readelf -h busybox | grep Machine
+
           aarch64-linux-gnu-readelf -h busybox | grep -q AArch64
 
           if aarch64-linux-gnu-readelf -l busybox | grep -q INTERP; then
-            echo "ERROR: BusyBox is not static"
+            echo "::error::BusyBox is not statically linked"
             exit 1
           fi
+
+          for applet in sh mount mkdir mknod sleep setsid cttyhack cat uname dmesg; do
+            ./busybox --list | grep -qx "$applet" || {
+              echo "::error::Missing BusyBox applet: $applet"
+              exit 1
+            }
+          done
 
           mkdir -p "$GITHUB_WORKSPACE/output"
           install -m 0755 busybox "$GITHUB_WORKSPACE/output/busybox-arm64"
@@ -89,12 +89,20 @@ jobs:
             ln -sf busybox "$ROOT/bin/$applet"
           done
 
+          # Console devices must exist in the archive before /init starts.
+          sudo mknod -m 600 "$ROOT/dev/console" c 5 1
+          sudo mknod -m 666 "$ROOT/dev/null" c 1 3
+          sudo chown root:root "$ROOT/dev/console" "$ROOT/dev/null"
+
           cat > "$ROOT/init" <<'INIT'
           #!/bin/sh
 
           export PATH=/bin:/sbin:/usr/bin:/usr/sbin
 
-          echo "===== NATIVE UBPORTS SWEET DIAGNOSTIC ====="
+          echo
+          echo "========================================"
+          echo " NATIVE UBPORTS SWEET DIAGNOSTIC INIT"
+          echo "========================================"
 
           mount -t proc proc /proc 2>/dev/null || true
           mount -t sysfs sysfs /sys 2>/dev/null || true
@@ -103,31 +111,48 @@ jobs:
           mkdir -p /dev/pts /run /tmp
           mount -t devpts devpts /dev/pts 2>/dev/null || true
 
-          [ -e /dev/console ] || mknod -m 600 /dev/console c 5 1
-          [ -e /dev/null ] || mknod -m 666 /dev/null c 1 3
-
-          echo "===== KERNEL ====="
+          echo
+          echo "===== KERNEL INFORMATION ====="
           uname -a
 
-          echo "===== CMDLINE ====="
+          echo
+          echo "===== KERNEL COMMAND LINE ====="
           cat /proc/cmdline 2>/dev/null || true
 
+          echo
           echo "===== MEMORY ====="
           cat /proc/meminfo 2>/dev/null || true
 
+          echo
           echo "===== PARTITIONS ====="
           cat /proc/partitions 2>/dev/null || true
 
-          echo "===== DIAGNOSTIC SHELL READY ====="
+          echo
+          echo "===== DEVICE TREE ====="
+          ls /sys/firmware/devicetree/base 2>/dev/null || true
+
+          echo
+          echo "===== KERNEL LOG ====="
+          dmesg 2>/dev/null | tail -n 80 || true
+
+          echo
+          echo "========================================"
+          echo " DIAGNOSTIC SHELL READY"
+          echo "========================================"
 
           exec setsid cttyhack sh
           INIT
 
           chmod 0755 "$ROOT/init"
 
-          cd "$ROOT"
-          find . -print0 | sort -z | cpio --null -o --format=newc > "$OUT/initramfs.cpio"
+          # Preserve root ownership and device nodes in newc archive.
+          sudo sh -c 'cd "$1" && find . -print0 | cpio --null -o --format=newc' \
+            _ "$ROOT" > "$OUT/initramfs.cpio"
+
           gzip -n -9 -c "$OUT/initramfs.cpio" > "$OUT/initramfs.cpio.gz"
+
+          test -s "$OUT/initramfs.cpio"
+          test -s "$OUT/initramfs.cpio.gz"
 
       - name: Validate initramfs
         shell: bash
@@ -141,16 +166,18 @@ jobs:
           mkdir -p "$VERIFY"
 
           gzip -dc "$OUT/initramfs.cpio.gz" \
-            | (cd "$VERIFY" && cpio -idm --quiet)
+            | sudo sh -c 'cd "$1" && cpio -idm --quiet' _ "$VERIFY"
 
           test -x "$VERIFY/init"
           test -x "$VERIFY/bin/busybox"
+          test -c "$VERIFY/dev/console"
+          test -c "$VERIFY/dev/null"
 
           aarch64-linux-gnu-readelf -h "$VERIFY/bin/busybox" \
             | grep -q AArch64
 
           if aarch64-linux-gnu-readelf -l "$VERIFY/bin/busybox" | grep -q INTERP; then
-            echo "ERROR: BusyBox requires dynamic linker"
+            echo "::error::BusyBox requires a dynamic linker"
             exit 1
           fi
 
@@ -159,7 +186,7 @@ jobs:
             test -e "$VERIFY/bin/$applet"
           done
 
-          echo "SUCCESS: ARM64 STATIC INITRAMFS VALIDATED"
+          echo "SUCCESS: ARM64 STATIC DIAGNOSTIC INITRAMFS VALIDATED"
 
       - name: Package artifact
         shell: bash
@@ -169,7 +196,10 @@ jobs:
           OUT="$GITHUB_WORKSPACE/output"
           cd "$OUT"
 
-          sha256sum busybox-arm64 initramfs.cpio initramfs.cpio.gz > SHA256SUMS
+          sha256sum \
+            busybox-arm64 \
+            initramfs.cpio \
+            initramfs.cpio.gz > SHA256SUMS
 
           cat > manifest.txt <<'EOF'
           Project: Native UBports Sweet
@@ -178,12 +208,19 @@ jobs:
           SoC: Qualcomm SM7150
           Architecture: ARM64
           BusyBox: 1.36.1 static
-          Initramfs: Diagnostic
+          Initramfs: Diagnostic early userspace
           Format: cpio newc + gzip
+          Root filesystem: Not included
+          Ubuntu Touch userspace: Not included
+          Purpose: Kernel and early userspace diagnostic
           EOF
 
           zip -9 NATIVE-UBPORT-SWEET-Diagnostic-Initramfs-ARM64.zip \
-            busybox-arm64 initramfs.cpio initramfs.cpio.gz SHA256SUMS manifest.txt
+            busybox-arm64 \
+            initramfs.cpio \
+            initramfs.cpio.gz \
+            SHA256SUMS \
+            manifest.txt
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
