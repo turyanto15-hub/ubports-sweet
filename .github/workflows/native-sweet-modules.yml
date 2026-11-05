@@ -1,4 +1,4 @@
-name: Native UBports Sweet - Kernel Modules
+name: Native Sweet Kernel Modules
 
 on:
   workflow_dispatch:
@@ -26,17 +26,11 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential \
-            bc \
-            bison \
-            flex \
-            libssl-dev \
-            libelf-dev \
-            dwarves \
+            build-essential bc bison flex \
+            libssl-dev libelf-dev dwarves \
             device-tree-compiler \
             gcc-aarch64-linux-gnu \
-            binutils-aarch64-linux-gnu \
-            zstd
+            binutils-aarch64-linux-gnu zstd
 
       - name: Checkout kernel source
         run: |
@@ -78,11 +72,14 @@ jobs:
           grep -qx 'CONFIG_MODULES=y' "$OUT/.config"
           grep -qx 'CONFIG_LOCALVERSION="-sm7150"' "$OUT/.config"
 
-          make O="$OUT" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" olddefconfig
+          make -s O="$OUT" ARCH="$ARCH" \
+            CROSS_COMPILE="$CROSS_COMPILE" olddefconfig
 
           cp "$OUT/.config" kernel.config
 
-          make O="$OUT" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" kernelrelease
+          echo "===== KERNEL RELEASE ====="
+          make -s O="$OUT" ARCH="$ARCH" \
+            CROSS_COMPILE="$CROSS_COMPILE" kernelrelease
 
       - name: Validate kernel configuration
         working-directory: kernel
@@ -131,13 +128,26 @@ jobs:
 
       - name: Install modules
         working-directory: kernel
+        shell: bash
         run: |
           set -euo pipefail
 
           MODULE_ROOT="$PWD/modules-root"
           mkdir -p "$MODULE_ROOT"
 
-          KERNEL_RELEASE="$(make O="$OUT" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" kernelrelease)"
+          # IMPORTANT: -s prevents Make directory messages
+          # from entering the KERNEL_RELEASE variable.
+          KERNEL_RELEASE="$(
+            make -s -C "$PWD" O="$OUT" \
+              ARCH="$ARCH" \
+              CROSS_COMPILE="$CROSS_COMPILE" \
+              kernelrelease
+          )"
+
+          if [[ ! "$KERNEL_RELEASE" =~ ^[A-Za-z0-9._+-]+$ ]]; then
+            echo "::error::Invalid kernel release: $KERNEL_RELEASE"
+            exit 1
+          fi
 
           echo "Kernel release: $KERNEL_RELEASE"
 
@@ -149,18 +159,28 @@ jobs:
 
           MODULE_DIR="$MODULE_ROOT/lib/modules/$KERNEL_RELEASE"
 
+          echo "===== MODULE DIRECTORY ====="
+
           if [ ! -d "$MODULE_DIR" ]; then
             echo "::error::Module directory not found: $MODULE_DIR"
-            find "$MODULE_ROOT" -maxdepth 5 -type d
+            find "$MODULE_ROOT" -maxdepth 6 -type d
             exit 1
           fi
 
-          find "$MODULE_DIR" -type l \( -name build -o -name source \) -delete
+          find "$MODULE_DIR" -type l \
+            \( -name build -o -name source \) -delete
 
+          echo "===== RUN DEPMOD ====="
           depmod -b "$MODULE_ROOT" "$KERNEL_RELEASE"
 
-          MODULE_COUNT="$(find "$MODULE_DIR" -type f \
-            \( -name '*.ko' -o -name '*.ko.zst' \) | wc -l)"
+          echo "===== MODULE COUNT ====="
+
+          MODULE_COUNT="$(
+            find "$MODULE_DIR" -type f \
+              \( -name '*.ko' \
+              -o -name '*.ko.zst' \
+              -o -name '*.ko.xz' \) | wc -l
+          )"
 
           echo "Installed module files: $MODULE_COUNT"
 
@@ -170,8 +190,11 @@ jobs:
             exit 1
           fi
 
-          echo "$KERNEL_RELEASE" > kernel-release.txt
-          echo "$MODULE_COUNT" > module-count.txt
+          test -s "$MODULE_DIR/modules.dep"
+          test -s "$OUT/System.map"
+
+          printf '%s\n' "$KERNEL_RELEASE" > kernel-release.txt
+          printf '%s\n' "$MODULE_COUNT" > module-count.txt
 
           echo "Kernel release: $KERNEL_RELEASE"
           echo "Installed modules: $MODULE_COUNT"
@@ -185,6 +208,8 @@ jobs:
           PACKAGE="NATIVE-UBPORT-SWEET-MODULES"
           KERNEL_RELEASE="$(cat kernel-release.txt)"
           MODULE_DIR="modules-root/lib/modules/$KERNEL_RELEASE"
+
+          test -d "$MODULE_DIR"
 
           mkdir -p "$PACKAGE/lib/modules"
 
