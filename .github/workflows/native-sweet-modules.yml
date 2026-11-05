@@ -138,6 +138,23 @@ jobs:
             exit 1
           fi
 
+      - name: Build kernel core and generate Module.symvers
+        working-directory: kernel
+        run: |
+          set -euo pipefail
+
+          make -j"$JOBS" O="$OUT" ARCH="$ARCH" \
+            CROSS_COMPILE="$CROSS_COMPILE" \
+            Image
+
+          if [ ! -s "$OUT/Module.symvers" ]; then
+            echo "::error::Module.symvers was not generated"
+            exit 1
+          fi
+
+          echo "Module.symvers generated:"
+          ls -lh "$OUT/Module.symvers"
+
       - name: Build kernel modules only
         working-directory: kernel
         run: |
