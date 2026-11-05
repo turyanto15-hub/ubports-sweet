@@ -27,7 +27,7 @@ jobs:
             gcc-aarch64-linux-gnu \
             binutils-aarch64-linux-gnu \
             wget bzip2 make cpio gzip file zip
-
+          sudo apt-get install -y qemu-user
       - name: Build static ARM64 BusyBox
         shell: bash
         run: |
@@ -64,7 +64,7 @@ jobs:
           fi
 
           for applet in sh mount mkdir mknod sleep setsid cttyhack cat uname dmesg; do
-            ./busybox --list | grep -qx "$applet" || {
+            qemu-aarch64 ./busybox --list | grep -qx "$applet" || {
               echo "::error::Missing BusyBox applet: $applet"
               exit 1
             }
