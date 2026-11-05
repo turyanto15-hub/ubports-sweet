@@ -106,7 +106,7 @@ jobs:
           test -d "$MODULE_DIR"
           find "$MODULE_DIR" -type l \( -name build -o -name source \) -delete
           depmod -b "$MODULE_ROOT" "$KERNEL_RELEASE"
-          MODULE_COUNT="$(find "$MODULE_DIR" -type f -name '*.ko' | wc -l)"
+          MODULE_COUNT="$(find "$MODULE_DIR" -type f -name "*.ko*" | wc -l)"
           test "$MODULE_COUNT" -gt 0
           echo "$KERNEL_RELEASE" > kernel-release.txt
           echo "$MODULE_COUNT" > module-count.txt
