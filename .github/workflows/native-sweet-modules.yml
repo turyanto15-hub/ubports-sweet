@@ -1,4 +1,4 @@
-name: Native UBports Sweet - Build Kernel Modules
+name: Native UBports Sweet - Kernel Modules
 
 on:
   workflow_dispatch:
@@ -8,75 +8,103 @@ permissions:
 
 jobs:
   build-modules:
-    name: Build ARM64 Kernel and Modules
     runs-on: ubuntu-24.04
-    timeout-minutes: 240
 
     env:
       ARCH: arm64
       CROSS_COMPILE: aarch64-linux-gnu-
       JOBS: 2
-      EXPECTED_COMMIT: 477b07522c115b2523e1d8a8f784e93b11a3054f
       OUT: out
+      EXPECTED_COMMIT: fd78d17954a86ea6ceb0c535e618ea129e09f8dd
 
     steps:
-      - name: Checkout Native Sweet project
+      - name: Checkout project
         uses: actions/checkout@v4
-        with:
-          path: project
-
-      - name: Checkout exact Sweet kernel source
-        uses: actions/checkout@v4
-        with:
-          repository: turyanto15-hub/linux-native
-          ref: 477b07522c115b2523e1d8a8f784e93b11a3054f
-          fetch-depth: 1
-          path: kernel
 
       - name: Install build dependencies
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y bc bison build-essential dwarves flex gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu libelf-dev libssl-dev python3 rsync kmod tar
+          sudo apt-get install -y \
+            build-essential \
+            bc \
+            bison \
+            flex \
+            libssl-dev \
+            libelf-dev \
+            dwarves \
+            device-tree-compiler \
+            gcc-aarch64-linux-gnu \
+            binutils-aarch64-linux-gnu \
+            zstd
+
+      - name: Checkout kernel source
+        run: |
+          set -euo pipefail
+          git clone https://github.com/turyanto15-hub/linux-native.git kernel
+          git -C kernel checkout v7.2
+          git -C kernel checkout "$EXPECTED_COMMIT"
 
       - name: Verify source and compiler
         working-directory: kernel
         run: |
           set -euo pipefail
+
           ACTUAL_COMMIT="$(git rev-parse HEAD)"
           test "$ACTUAL_COMMIT" = "$EXPECTED_COMMIT"
+
           GCC_VERSION="$(aarch64-linux-gnu-gcc -dumpfullversion -dumpversion)"
           echo "GCC version: $GCC_VERSION"
+
           case "$GCC_VERSION" in
             13.3*) ;;
-            *) echo "::error::Expected GCC 13.3.x"; exit 1 ;;
+            *)
+              echo "::error::Expected GCC 13.3.x"
+              exit 1
+              ;;
           esac
 
       - name: Load exact Image configuration
         working-directory: kernel
         run: |
           set -euo pipefail
+
           CONFIG_SOURCE="../project/configs/sweet/kernel.config"
           test -s "$CONFIG_SOURCE"
+
           mkdir -p "$OUT"
           cp "$CONFIG_SOURCE" "$OUT/.config"
+
           grep -qx 'CONFIG_MODULES=y' "$OUT/.config"
           grep -qx 'CONFIG_LOCALVERSION="-sm7150"' "$OUT/.config"
+
           make O="$OUT" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" olddefconfig
+
           cp "$OUT/.config" kernel.config
+
           make O="$OUT" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" kernelrelease
 
       - name: Validate kernel configuration
         working-directory: kernel
         run: |
           set -euo pipefail
+
           CONFIG="$OUT/.config"
-          for ITEM in CONFIG_MODULES CONFIG_ARM64_4K_PAGES CONFIG_ARM64_VA_BITS_39 CONFIG_DRM_MSM CONFIG_DRM_PANEL_SAMSUNG_AMS667YR01 CONFIG_TOUCHSCREEN_GOODIX_GTX8; do
+
+          for ITEM in \
+            CONFIG_MODULES \
+            CONFIG_ARM64_4K_PAGES \
+            CONFIG_ARM64_VA_BITS_39 \
+            CONFIG_DRM_MSM \
+            CONFIG_DRM_PANEL_SAMSUNG_AMS667YR01 \
+            CONFIG_TOUCHSCREEN_GOODIX_GTX8; do
+
             grep -qx "$ITEM=y" "$CONFIG" || {
               echo "::error::Missing $ITEM=y"
               exit 1
             }
           done
+
           if grep -q '^CONFIG_ARM64_LPA2=y' "$CONFIG"; then
             echo "::error::LPA2 must remain disabled"
             exit 1
@@ -86,46 +114,86 @@ jobs:
         working-directory: kernel
         run: |
           set -euo pipefail
-          make -j"$JOBS" O="$OUT" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" 2>&1 | tee kernel-modules-build.log
+
+          make -j"$JOBS" \
+            O="$OUT" \
+            ARCH="$ARCH" \
+            CROSS_COMPILE="$CROSS_COMPILE" \
+            2>&1 | tee kernel-modules-build.log
+
           test -s "$OUT/Module.symvers" || {
             echo "::error::Module.symvers was not generated"
             find "$OUT" -name Module.symvers -type f -ls
             exit 1
           }
+
           ls -lh "$OUT/Module.symvers"
 
       - name: Install modules
         working-directory: kernel
         run: |
           set -euo pipefail
+
           MODULE_ROOT="$PWD/modules-root"
           mkdir -p "$MODULE_ROOT"
+
           KERNEL_RELEASE="$(make O="$OUT" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" kernelrelease)"
-          make O="$OUT" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" INSTALL_MOD_PATH="$MODULE_ROOT" modules_install
+
+          echo "Kernel release: $KERNEL_RELEASE"
+
+          make O="$OUT" \
+            ARCH="$ARCH" \
+            CROSS_COMPILE="$CROSS_COMPILE" \
+            INSTALL_MOD_PATH="$MODULE_ROOT" \
+            modules_install
+
           MODULE_DIR="$MODULE_ROOT/lib/modules/$KERNEL_RELEASE"
-          test -d "$MODULE_DIR"
+
+          if [ ! -d "$MODULE_DIR" ]; then
+            echo "::error::Module directory not found: $MODULE_DIR"
+            find "$MODULE_ROOT" -maxdepth 5 -type d
+            exit 1
+          fi
+
           find "$MODULE_DIR" -type l \( -name build -o -name source \) -delete
+
           depmod -b "$MODULE_ROOT" "$KERNEL_RELEASE"
-          MODULE_COUNT="$(find "$MODULE_DIR" -type f -name "*.ko*" | wc -l)"
-          test "$MODULE_COUNT" -gt 0
+
+          MODULE_COUNT="$(find "$MODULE_DIR" -type f \
+            \( -name '*.ko' -o -name '*.ko.zst' \) | wc -l)"
+
+          echo "Installed module files: $MODULE_COUNT"
+
+          if [ "$MODULE_COUNT" -le 0 ]; then
+            echo "::error::No kernel modules found"
+            find "$MODULE_DIR" -type f
+            exit 1
+          fi
+
           echo "$KERNEL_RELEASE" > kernel-release.txt
           echo "$MODULE_COUNT" > module-count.txt
+
           echo "Kernel release: $KERNEL_RELEASE"
           echo "Installed modules: $MODULE_COUNT"
+          echo "Module installation and depmod completed successfully."
 
       - name: Package modules
         working-directory: kernel
         run: |
           set -euo pipefail
+
           PACKAGE="NATIVE-UBPORT-SWEET-MODULES"
           KERNEL_RELEASE="$(cat kernel-release.txt)"
           MODULE_DIR="modules-root/lib/modules/$KERNEL_RELEASE"
+
           mkdir -p "$PACKAGE/lib/modules"
+
           cp -a "$MODULE_DIR" "$PACKAGE/lib/modules/"
           cp kernel.config "$PACKAGE/kernel.config"
           cp kernel-modules-build.log "$PACKAGE/kernel-modules-build.log"
           cp "$OUT/Module.symvers" "$PACKAGE/Module.symvers"
           cp "$OUT/System.map" "$PACKAGE/System.map"
+
           cat > "$PACKAGE/manifest.txt" <<EOF2
           Project: Native UBports Sweet
           Device: Xiaomi Redmi Note 10 Pro
@@ -141,11 +209,14 @@ jobs:
           LPA2: disabled
           Installed modules: $(cat module-count.txt)
           EOF2
+
           (
             cd "$PACKAGE"
             find . -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
           )
+
           tar -czf NATIVE-UBPORT-SWEET-MODULES.tar.gz "$PACKAGE"
+
           ls -lh NATIVE-UBPORT-SWEET-MODULES.tar.gz
 
       - name: Upload modules artifact
