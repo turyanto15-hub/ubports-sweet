@@ -1,5 +1,4 @@
 
-cat > ~/ubports-sweet/.github/workflows/native-sweet-modules.yml <<'EOF'
 name: Native UBports Sweet - Build Kernel Modules
 
 on:
@@ -218,6 +217,3 @@ jobs:
           path: kernel/NATIVE-UBPORT-SWEET-MODULES.tar.gz
           if-no-files-found: error
           retention-days: 14
-EOF
-
-ls -lh ~/ubports-sweet/.github/workflows/native-sweet-modules.yml
