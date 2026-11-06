@@ -1,0 +1,179 @@
+
+name: Native Sweet ARM64 Rootfs
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-sweet-rootfs
+  cancel-in-progress: true
+
+jobs:
+  build-rootfs:
+    name: Build Noble ARM64 Rootfs and system.img
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Install host dependencies
+        run: |
+          set -e
+          sudo apt-get update
+          sudo apt-get install -y \
+            debootstrap \
+            qemu-user-static \
+            binfmt-support \
+            e2fsprogs \
+            rsync
+
+      - name: Prepare ARM64 rootfs
+        run: |
+          set -e
+          ROOTFS="$GITHUB_WORKSPACE/rootfs-arm64"
+
+          sudo debootstrap \
+            --arch=arm64 \
+            --foreign \
+            --variant=minbase \
+            noble "$ROOTFS" \
+            http://ports.ubuntu.com/ubuntu-ports/
+
+          sudo cp /usr/bin/qemu-aarch64-static \
+            "$ROOTFS/usr/bin/"
+
+          sudo update-binfmts --enable qemu-aarch64
+
+          sudo cp -L /etc/resolv.conf "$ROOTFS/etc/resolv.conf"
+
+          sudo chroot "$ROOTFS" \
+            /debootstrap/debootstrap --second-stage
+
+      - name: Configure Noble repositories
+        run: |
+          set -e
+          ROOTFS="$GITHUB_WORKSPACE/rootfs-arm64"
+
+          sudo tee "$ROOTFS/etc/apt/sources.list" >/dev/null <<'EOF'
+          deb http://ports.ubuntu.com/ubuntu-ports noble main restricted universe multiverse
+          deb http://ports.ubuntu.com/ubuntu-ports noble-updates main restricted universe multiverse
+          deb http://ports.ubuntu.com/ubuntu-ports noble-backports main restricted universe multiverse
+          deb http://ports.ubuntu.com/ubuntu-ports noble-security main restricted universe multiverse
+          EOF
+
+          echo sweet-native | sudo tee "$ROOTFS/etc/hostname"
+
+          sudo chroot "$ROOTFS" /bin/sh -c \
+            'printf "#!/bin/sh\nexit 101\n" > /usr/sbin/policy-rc.d && chmod 755 /usr/sbin/policy-rc.d'
+
+      - name: Mount system filesystems
+        run: |
+          set -e
+          ROOTFS="$GITHUB_WORKSPACE/rootfs-arm64"
+
+          sudo mount --bind /dev "$ROOTFS/dev"
+          sudo mount --bind /dev/pts "$ROOTFS/dev/pts"
+          sudo mount -t proc proc "$ROOTFS/proc"
+          sudo mount -t sysfs sysfs "$ROOTFS/sys"
+          sudo mount --bind /run "$ROOTFS/run"
+
+      - name: Update ARM64 package index
+        run: |
+          set -e
+          ROOTFS="$GITHUB_WORKSPACE/rootfs-arm64"
+
+          sudo chroot "$ROOTFS" /usr/bin/apt-get update
+
+      - name: Install Native Sweet userspace
+        run: |
+          set -e
+          ROOTFS="$GITHUB_WORKSPACE/rootfs-arm64"
+
+          sudo chroot "$ROOTFS" /usr/bin/env \
+            DEBIAN_FRONTEND=noninteractive \
+            apt-get install -y --no-install-recommends \
+            systemd systemd-sysv udev dbus \
+            sudo ca-certificates locales \
+            kmod iproute2 iputils-ping \
+            network-manager \
+            pulseaudio \
+            lomiri \
+            lomiri-desktop-session \
+            lomiri-greeter \
+            lomiri-polkit-agent \
+            maliit-keyboard \
+            mir-platform-graphics-gbm-kms
+
+          sudo chroot "$ROOTFS" /usr/bin/locale-gen en_US.UTF-8
+
+          sudo rm -f "$ROOTFS/usr/sbin/policy-rc.d"
+
+      - name: Verify ARM64 rootfs
+        run: |
+          set -e
+          ROOTFS="$GITHUB_WORKSPACE/rootfs-arm64"
+
+          sudo chroot "$ROOTFS" \
+            /usr/bin/dpkg --print-architecture
+
+          sudo chroot "$ROOTFS" \
+            /usr/bin/dpkg --audit
+
+          sudo mkdir -p "$GITHUB_WORKSPACE/output"
+
+          sudo chroot "$ROOTFS" \
+            /usr/bin/dpkg-query -W \
+            -f='${binary:Package}\t${Version}\n' \
+            | sudo tee "$GITHUB_WORKSPACE/output/packages.txt"
+
+      - name: Build ext4 system image
+        run: |
+          set -e
+          ROOTFS="$GITHUB_WORKSPACE/rootfs-arm64"
+          OUTPUT="$GITHUB_WORKSPACE/output"
+
+          ROOT_SIZE=$(sudo du -sm "$ROOTFS" | awk '{print $1}')
+          IMAGE_SIZE=$((ROOT_SIZE + ROOT_SIZE / 3 + 512))
+
+          sudo truncate -s "${IMAGE_SIZE}M" \
+            "$OUTPUT/system.img"
+
+          sudo mkfs.ext4 -F \
+            -L ubuntu-rootfs \
+            -d "$ROOTFS" \
+            "$OUTPUT/system.img"
+
+          sudo e2fsck -fn "$OUTPUT/system.img"
+
+          sudo chown "$USER:$USER" "$OUTPUT/system.img"
+
+      - name: Create rootfs archive and manifest
+        run: |
+          set -e
+          ROOTFS="$GITHUB_WORKSPACE/rootfs-arm64"
+          OUTPUT="$GITHUB_WORKSPACE/output"
+
+          sudo tar --numeric-owner --xattrs --acls \
+            -czf "$OUTPUT/rootfs-arm64-noble.tar.gz" \
+            -C "$ROOTFS" .
+
+          {
+            echo "Device: Xiaomi Redmi Note 10 Pro (sweet)"
+            echo "Architecture: arm64"
+            echo "Distribution: Ubuntu 24.04 Noble"
+            echo "Filesystem: ext4"
+            echo "Desktop shell: Lomiri"
+            echo "Session: lomiri-desktop-session"
+            echo "Purpose: Experimental Native Linux rootfs"
+            echo "Flash status: NOT READY FOR DEVICE FLASHING"
+          } > "$OUTPUT/manifest.txt"
+
+      - name: Upload rootfs artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: NATIVE-SWEET-NOBLE-ARM64-ROOTFS
+          path: output/
+          compression-level: 0
+          retention-days: 7
