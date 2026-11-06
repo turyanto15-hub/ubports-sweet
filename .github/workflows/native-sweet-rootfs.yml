@@ -110,6 +110,15 @@ jobs:
 
           sudo rm -f "$ROOTFS/usr/sbin/policy-rc.d"
 
+      - name: Initialize systemd users and runtime directories
+        run: |
+          set -e
+          ROOTFS="$GITHUB_WORKSPACE/rootfs-arm64"
+
+          sudo chroot "$ROOTFS" /usr/bin/systemd-sysusers
+
+          sudo chroot "$ROOTFS" /usr/bin/systemd-tmpfiles --create
+
       - name: Verify ARM64 rootfs
         run: |
           set -e
@@ -148,7 +157,12 @@ jobs:
           sudo e2fsck -fn "$OUTPUT/system.img"
 
           sudo chown "$USER:$USER" "$OUTPUT/system.img"
-
+         
+          for DIR in run sys proc dev/pts dev; do
+           if mountpoint -q "$ROOTFS/$DIR"; then
+              sudo umount "$ROOTFS/$DIR"
+           fi
+          done
       - name: Create rootfs archive and manifest
         run: |
           set -e
@@ -177,3 +191,21 @@ jobs:
           path: output/
           compression-level: 0
           retention-days: 7
+    
+      - name: Cleanup mounted filesystems
+        if: always()
+        run: |
+          ROOTFS="$GITHUB_WORKSPACE/rootfs-arm64"
+
+          for DIR in run sys proc dev/pts dev; do
+            if mountpoint -q "$ROOTFS/$DIR"; then
+              echo "Unmounting $DIR"
+              sudo umount "$ROOTFS/$DIR" || {
+                echo "WARNING: Failed to unmount $DIR"
+                exit 1
+              }
+            fi
+          done
+
+          echo "Mount cleanup completed."
+
