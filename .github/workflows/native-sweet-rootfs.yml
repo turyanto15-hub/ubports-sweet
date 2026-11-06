@@ -81,7 +81,6 @@ jobs:
           sudo mount --bind /dev/pts "$ROOTFS/dev/pts"
           sudo mount -t proc proc "$ROOTFS/proc"
           sudo mount -t sysfs sysfs "$ROOTFS/sys"
-          sudo mount --bind /run "$ROOTFS/run"
 
       - name: Update ARM64 package index
         run: |
@@ -131,28 +130,12 @@ jobs:
           sudo chroot "$ROOTFS" \
             /usr/bin/systemd-sysusers
 
-      - name: Cleanup mounted filesystems
-        if: always()
-        run: |
-          set -e
-          ROOTFS="$GITHUB_WORKSPACE/rootfs-arm64"
-
-          if [ ! -d "$ROOTFS" ]; then
-            exit 0
-          fi
-
-          for DIR in run sys proc dev/pts dev; do
-            if mountpoint -q "$ROOTFS/$DIR"; then
-              echo "Unmounting $DIR"
-              sudo umount "$ROOTFS/$DIR"
-            fi
-          done
-
       - name: Initialize systemd tmpfiles
         run: |
           set -e
           ROOTFS="$GITHUB_WORKSPACE/rootfs-arm64"
 
+          # /proc masih ter-mount pada tahap ini.
           sudo chroot "$ROOTFS" \
             /usr/bin/systemd-tmpfiles --create
 
@@ -189,13 +172,39 @@ jobs:
             -f='${binary:Package}\t${Version}\n' \
             | sudo tee "$OUTPUT/packages.txt"
 
+      - name: Cleanup mounted filesystems
+        if: always()
+        run: |
+          set -e
+          ROOTFS="$GITHUB_WORKSPACE/rootfs-arm64"
+
+          if [ ! -d "$ROOTFS" ]; then
+            exit 0
+          fi
+
+          STATUS=0
+
+          for DIR in sys proc dev/pts dev; do
+            if mountpoint -q "$ROOTFS/$DIR"; then
+              echo "Unmounting $DIR"
+              sudo umount "$ROOTFS/$DIR" || STATUS=1
+            fi
+          done
+
+          if [ "$STATUS" -ne 0 ]; then
+            echo "ERROR: One or more mounts could not be released."
+            exit 1
+          fi
+
+          echo "All mounted filesystems have been released."
+
       - name: Build ext4 system image
         run: |
           set -e
           ROOTFS="$GITHUB_WORKSPACE/rootfs-arm64"
           OUTPUT="$GITHUB_WORKSPACE/output"
 
-          for DIR in run sys proc dev/pts dev; do
+          for DIR in sys proc dev/pts dev; do
             if mountpoint -q "$ROOTFS/$DIR"; then
               echo "ERROR: $DIR is still mounted!"
               exit 1
@@ -204,6 +213,9 @@ jobs:
 
           ROOT_SIZE=$(sudo du -smx "$ROOTFS" | awk '{print $1}')
           IMAGE_SIZE=$((ROOT_SIZE + ROOT_SIZE / 3 + 512))
+
+          echo "Rootfs size: ${ROOT_SIZE}M"
+          echo "System image size: ${IMAGE_SIZE}M"
 
           sudo truncate -s "${IMAGE_SIZE}M" \
             "$OUTPUT/system.img"
