@@ -145,7 +145,8 @@ jobs:
           ROOTFS="$GITHUB_WORKSPACE/rootfs-arm64"
           OUTPUT="$GITHUB_WORKSPACE/output"
 
-          sudo mkdir -p "$OUTPUT"
+          mkdir -p "$OUTPUT"
+          sudo chown "$USER:$USER" "$OUTPUT"
 
           ARCH=$(sudo chroot "$ROOTFS" \
             /usr/bin/dpkg --print-architecture)
@@ -256,7 +257,6 @@ jobs:
             echo "Build: GitHub Actions"
             echo "Flash status: NOT READY FOR DEVICE FLASHING"
           } > "$OUTPUT/manifest.txt"
-
       - name: Verify build artifacts
         run: |
           set -e
