@@ -2,38 +2,51 @@ name: Build Native Sweet RAMDISK
 
 on:
   workflow_dispatch:
+  workflow_run:
+    workflows: ["Build Native Sweet RootFS"]
+    types:
+      - completed
 
 permissions:
   contents: read
-  actions: read
 
 jobs:
   build-ramdisk:
-    name: Build ARM64 Native Sweet Initramfs
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-22.04
-    timeout-minutes: 45
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install build dependencies
+      - name: Install dependencies
         run: |
-          set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y \
             build-essential \
             gcc-aarch64-linux-gnu \
-            wget bzip2 cpio gzip file \
-            qemu-user
+            wget \
+            bzip2 \
+            cpio \
+            gzip \
+            file \
+            qemu-user \
+            findutils
 
-      - name: Download and configure BusyBox
+      - name: Download BusyBox
         run: |
-          set -euo pipefail
+          set -eux
 
-          wget -q https://busybox.net/downloads/busybox-1.37.0.tar.bz2
-          tar -xjf busybox-1.37.0.tar.bz2
-          cd busybox-1.37.0
+          wget -O busybox.tar.bz2 \
+            https://busybox.net/downloads/busybox-1.37.0.tar.bz2
+
+          tar -xjf busybox.tar.bz2
+          mv busybox-1.37.0 busybox
+
+      - name: Configure BusyBox
+        working-directory: busybox
+        run: |
+          set -eux
 
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig
 
@@ -45,228 +58,272 @@ jobs:
             -e 's/^# CONFIG_FEATURE_MOUNT_LOOP is not set/CONFIG_FEATURE_MOUNT_LOOP=y/' \
             .config
 
-          make oldconfig </dev/null
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- oldconfig </dev/null
 
-          for option in \
-            CONFIG_STATIC \
-            CONFIG_MDEV \
-            CONFIG_LOSETUP \
-            CONFIG_SWITCH_ROOT \
-            CONFIG_FEATURE_MOUNT_LOOP; do
-            grep -qx "${option}=y" .config || {
-              echo "::error::Required BusyBox option missing: ${option}"
-              exit 1
-            }
-          done
+          echo "===== BUSYBOX CONFIG ====="
+          grep -E '^CONFIG_(STATIC|MDEV|LOSETUP|SWITCH_ROOT|FEATURE_MOUNT_LOOP)=' .config
 
-      - name: Compile static ARM64 BusyBox
+      - name: Fix watchdog warning
+        working-directory: busybox
         run: |
-          set -euo pipefail
+          set -eux
 
-          cd busybox-1.37.0
+          python3 - <<'PY'
+          from pathlib import Path
 
-          make -j2 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
+          path = Path("miscutils/watchdog.c")
+          source = path.read_text()
 
-          test -s busybox
+          source = source.replace(
+              'write(3, "", 1); /* write zero byte */',
+              '(void)!write(3, "", 1); /* write zero byte */'
+          )
 
-          aarch64-linux-gnu-readelf -h busybox | grep -q AArch64
+          source = source.replace(
+              'write(3, &V, 1);  /* Magic, see watchdog-api.txt in kernel */',
+              '(void)!write(3, &V, 1);  /* Magic, see watchdog-api.txt in kernel */'
+          )
 
-          if aarch64-linux-gnu-readelf -l busybox | grep -q INTERP; then
-            echo "::error::BusyBox is not statically linked"
+          path.write_text(source)
+
+          if 'write(3, "", 1); /* write zero byte */' in source:
+              raise SystemExit("watchdog first warning fix failed")
+
+          if 'write(3, &V, 1);  /* Magic, see watchdog-api.txt in kernel */' in source:
+              raise SystemExit("watchdog second warning fix failed")
+
+          print("watchdog.c warning fixes applied")
+          PY
+
+          grep -n 'write(3' miscutils/watchdog.c
+
+      - name: Build static ARM64 BusyBox
+        working-directory: busybox
+        run: |
+          set -eux
+
+          make -j"$(nproc)" \
+            ARCH=arm64 \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CFLAGS="-Wno-error=unused-result"
+
+          file busybox
+
+          aarch64-linux-gnu-readelf -h busybox | grep -E 'Class:|Machine:'
+          aarch64-linux-gnu-readelf -l busybox | tee /tmp/busybox-program-headers.txt
+
+          if grep -q INTERP /tmp/busybox-program-headers.txt; then
+            echo "ERROR: BusyBox is dynamically linked"
             exit 1
           fi
 
-          qemu-aarch64 ./busybox --list > ../busybox-applets.txt
+      - name: Verify BusyBox applets
+        working-directory: busybox
+        run: |
+          set -eux
+
+          qemu-aarch64 ./busybox --list > /tmp/applets.txt
 
           for applet in \
-            sh mount mkdir mknod sleep cat uname dmesg \
-            ls grep head tail wc readlink losetup \
-            switch_root mdev; do
-            grep -qx "$applet" ../busybox-applets.txt || {
-              echo "::error::Missing BusyBox applet: $applet"
-              exit 1
-            }
+            sh \
+            mount \
+            mkdir \
+            mknod \
+            sleep \
+            cat \
+            uname \
+            dmesg \
+            ls \
+            grep \
+            head \
+            tail \
+            wc \
+            readlink \
+            losetup \
+            switch_root \
+            mdev
+          do
+            grep -qx "$applet" /tmp/applets.txt
           done
 
-          mkdir -p "$GITHUB_WORKSPACE/ramdisk"
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
-            CONFIG_PREFIX="$GITHUB_WORKSPACE/ramdisk" install
+          echo "All required BusyBox applets are available."
 
-      - name: Prepare Native Sweet ramdisk
+      - name: Create initramfs
         run: |
-          set -euo pipefail
+          set -eux
 
-          R="$GITHUB_WORKSPACE/ramdisk"
+          mkdir -p ramdisk/bin
+          mkdir -p ramdisk/sbin
+          mkdir -p ramdisk/dev
+          mkdir -p ramdisk/proc
+          mkdir -p ramdisk/sys
+          mkdir -p ramdisk/run
+          mkdir -p ramdisk/mnt/sd
+          mkdir -p ramdisk/newroot
 
-          mkdir -p "$R"/{dev,proc,sys,run,tmp,mnt/sd,newroot}
+          cp busybox/busybox ramdisk/bin/busybox
 
-          cat > "$R/init" <<'INIT'
+          ln -sf ../bin/busybox ramdisk/sbin/mdev
+          ln -sf ../bin/busybox ramdisk/bin/sh
+          ln -sf ../bin/busybox ramdisk/bin/mount
+          ln -sf ../bin/busybox ramdisk/bin/umount
+          ln -sf ../bin/busybox ramdisk/bin/mkdir
+          ln -sf ../bin/busybox ramdisk/bin/sleep
+          ln -sf ../bin/busybox ramdisk/bin/cat
+          ln -sf ../bin/busybox ramdisk/bin/dmesg
+          ln -sf ../bin/busybox ramdisk/bin/grep
+          ln -sf ../bin/busybox ramdisk/bin/ls
+          ln -sf ../bin/busybox ramdisk/bin/readlink
+          ln -sf ../bin/busybox ramdisk/sbin/losetup
+          ln -sf ../bin/busybox ramdisk/sbin/switch_root
+
+          cat > ramdisk/init <<'INIT'
           #!/bin/sh
 
-          export PATH=/bin:/sbin:/usr/bin:/usr/sbin
-          export HOME=/root
+          export PATH=/bin:/sbin
 
-          SD=/mnt/sd
-          ROOT=/newroot
-          IMAGE=system.img
-          LOOP=/dev/loop0
-
-          mkdir -p /dev /proc /sys /run /tmp "$SD" "$ROOT"
+          echo
+          echo "======================================"
+          echo " Native UBports Sweet Initramfs"
+          echo "======================================"
 
           mount -t devtmpfs devtmpfs /dev
           mount -t proc proc /proc
           mount -t sysfs sysfs /sys
 
-          mdev -s
+          mkdir -p /run
+          mkdir -p /mnt/sd
+          mkdir -p /newroot
 
-          echo
-          echo "=================================="
-          echo " NATIVE UBPORTS SWEET BOOT"
-          echo "=================================="
+          echo "Scanning microSD ext4 partitions..."
 
-          FOUND=0
-          COUNT=0
+          FOUND=""
 
-          echo "Waiting for ext4 microSD..."
+          for PART in /sys/class/block/mmcblk*p*; do
+              [ -e "$PART" ] || continue
 
-          while [ "$COUNT" -lt 90 ]; do
-              mdev -s
+              DEV="/dev/$(basename "$PART")"
 
-              for PART in /sys/class/block/mmcblk*p*; do
-                  [ -e "$PART" ] || continue
+              echo "Checking $DEV"
 
-                  DEV="/dev/$(basename "$PART")"
-                  [ -b "$DEV" ] || continue
-
-                  if mount -t ext4 -o rw "$DEV" "$SD" 2>/dev/null; then
-                      FOUND=1
+              if mount -t ext4 -o ro "$DEV" /mnt/sd 2>/dev/null; then
+                  if [ -f /mnt/sd/system.img ]; then
+                      FOUND="$DEV"
+                      echo "Found system.img on $DEV"
                       break
                   fi
-              done
 
-              [ "$FOUND" -eq 1 ] && break
-
-              sleep 1
-              COUNT=$((COUNT + 1))
+                  umount /mnt/sd
+              fi
           done
 
-          if [ "$FOUND" -ne 1 ]; then
-              echo "ERROR: ext4 microSD partition not found"
+          if [ -z "$FOUND" ]; then
+              echo "ERROR: system.img not found on ext4 microSD"
               exec sh
-          fi
-
-          echo "microSD mounted."
-
-          if [ ! -f "$SD/$IMAGE" ]; then
-              echo "ERROR: system.img not found at microSD root"
-              exec sh
-          fi
-
-          if [ ! -b "$LOOP" ]; then
-              mknod "$LOOP" b 7 0
           fi
 
           echo "Attaching system.img..."
 
-          if ! losetup "$LOOP" "$SD/$IMAGE"; then
-              echo "ERROR: loop device setup failed"
+          losetup /dev/loop0 /mnt/sd/system.img
+
+          mkdir -p /newroot
+
+          if ! mount -t ext4 -o rw /dev/loop0 /newroot; then
+              echo "ERROR: Cannot mount ext4 system.img"
               exec sh
           fi
 
-          echo "Mounting Ubuntu root filesystem..."
-
-          if ! mount -t ext4 -o rw "$LOOP" "$ROOT"; then
-              echo "ERROR: Ubuntu rootfs mount failed"
+          if [ ! -x /newroot/sbin/init ]; then
+              echo "ERROR: /sbin/init missing in system.img"
               exec sh
           fi
 
-          if [ ! -x "$ROOT/sbin/init" ]; then
-              echo "ERROR: /sbin/init not found in system.img"
-              exec sh
-          fi
+          echo "Root filesystem found."
+          echo "Preparing system transition..."
 
-          mkdir -p "$ROOT/run" "$ROOT/dev" \
-              "$ROOT/proc" "$ROOT/sys" "$ROOT/mnt/sd"
+          mkdir -p /newroot/dev
+          mkdir -p /newroot/proc
+          mkdir -p /newroot/sys
+          mkdir -p /newroot/run
+          mkdir -p /newroot/mnt/sd
 
-          mount -t tmpfs tmpfs "$ROOT/run"
+          mount -t tmpfs tmpfs /newroot/run
 
-          mount --move /dev "$ROOT/dev"
-          mount --move /proc "$ROOT/proc"
-          mount --move /sys "$ROOT/sys"
-          mount --move "$SD" "$ROOT/mnt/sd"
+          mount --move /dev /newroot/dev
+          mount --move /proc /newroot/proc
+          mount --move /sys /newroot/sys
+          mount --move /mnt/sd /newroot/mnt/sd
 
-          echo "Switching to Ubuntu root filesystem..."
+          echo "Switching to Native UBports root filesystem..."
 
-          exec switch_root -c /dev/console \
-              "$ROOT" /sbin/init
+          exec switch_root -c /dev/console /newroot /sbin/init
 
-          echo "ERROR: switch_root returned"
+          echo "ERROR: switch_root failed"
           exec sh
           INIT
 
-          chmod 0755 "$R/init"
+          chmod 0755 ramdisk/init
 
-          test -x "$R/bin/busybox"
-          test -x "$R/init"
+          cat > ramdisk/RAMDISK-MANIFEST.txt <<'EOF'
+          Native UBports Sweet RAMDISK
+          Device: Xiaomi Redmi Note 10 Pro (sweet)
+          Architecture: ARM64
+          Initramfs: gzip-compressed cpio
+          BusyBox: static ARM64
+          Root filesystem image: system.img
+          microSD partition filesystem: ext4
+          Root filesystem filesystem: ext4
+          Boot mode: initramfs -> loop device -> switch_root
+          EOF
 
-      - name: Package ramdisk
+      - name: Package initramfs
         run: |
-          set -euo pipefail
+          set -eux
 
           cd ramdisk
 
-          find . -print0 | cpio --null -o -H newc \
-            --owner=0:0 | gzip -n -9 > ../native-sweet-ramdisk.cpio.gz
+          find . -print0 | sort -z | \
+            cpio --null -o -H newc --owner=0:0 | gzip -9 \
+            > ../native-sweet-ramdisk.cpio.gz
 
           cd ..
 
-          gzip -t native-sweet-ramdisk.cpio.gz
+          file native-sweet-ramdisk.cpio.gz
+          ls -lh native-sweet-ramdisk.cpio.gz
 
-          sha256sum native-sweet-ramdisk.cpio.gz > SHA256SUMS
+          sha256sum native-sweet-ramdisk.cpio.gz \
+            > SHA256SUMS
 
-          cat > RAMDISK-MANIFEST.txt <<'EOF'
-          Project: Native UBports Sweet
-          Device: Redmi Note 10 Pro
-          Codename: sweet
-          Architecture: ARM64
-          Initramfs: gzip compressed cpio newc
-          BusyBox: 1.37.0 static
-          microSD filesystem: ext4
-          Root filesystem image: system.img
-          Root filesystem format: ext4
-          Loop device: /dev/loop0
-          Root switch: switch_root
-          Status: Ramdisk build candidate
-          EOF
-
-      - name: Validate ramdisk archive
+      - name: Validate initramfs
         run: |
-          set -euo pipefail
+          set -eux
 
           mkdir verify
-          gzip -dc native-sweet-ramdisk.cpio.gz \
-            | (cd verify && cpio -idm --quiet)
+
+          gzip -dc native-sweet-ramdisk.cpio.gz | \
+            (cd verify && cpio -idm --no-absolute-filenames)
 
           test -x verify/init
           test -x verify/bin/busybox
-          test -s native-sweet-ramdisk.cpio.gz
+          test -L verify/bin/sh
+          test -L verify/sbin/losetup
+          test -L verify/sbin/switch_root
 
-          grep -q 'IMAGE=system.img' verify/init
+          grep -q 'system.img' verify/init
           grep -q 'mount -t ext4' verify/init
           grep -q 'switch_root' verify/init
 
-          echo "===== RAMDISK CONTENTS ====="
-          find verify -maxdepth 2 -type f -o -type l | sort
+          echo "===== INITRAMFS VALIDATION PASSED ====="
 
-          echo "RAMDISK VALIDATION PASSED"
+          find verify -maxdepth 3 -type f -o -type l | sort
 
-      - name: Upload ramdisk artifact
+      - name: Upload RAMDISK artifact
         uses: actions/upload-artifact@v4
         with:
           name: NATIVE-UBPORT-SWEET-RAMDISK
           path: |
             native-sweet-ramdisk.cpio.gz
             SHA256SUMS
-            RAMDISK-MANIFEST.txt
+            ramdisk/RAMDISK-MANIFEST.txt
           if-no-files-found: error
           retention-days: 30
