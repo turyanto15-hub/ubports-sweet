@@ -1,3 +1,4 @@
+
 name: Native UBports Sweet Kernel Build
 
 on:
@@ -85,6 +86,11 @@ jobs:
             --disable ARM64_LPA2 \
             --disable ARM64_16K_PAGES \
             --disable ARM64_64K_PAGES \
+            --enable BLK_DEV_LOOP \
+            --enable EXT4_FS \
+            --enable EXFAT_FS \
+            --enable NLS \
+            --enable NLS_UTF8 \
             --enable DRM \
             --enable DRM_MSM \
             --enable DRM_MSM_DSI \
@@ -111,6 +117,11 @@ jobs:
           require_config CONFIG_ARM64_4K_PAGES
           require_config CONFIG_ARM64_VA_BITS_39
           require_config CONFIG_ARM64_PA_BITS_48
+          require_config CONFIG_BLK_DEV_LOOP
+          require_config CONFIG_EXT4_FS
+          require_config CONFIG_EXFAT_FS
+          require_config CONFIG_NLS
+          require_config CONFIG_NLS_UTF8
           require_config CONFIG_DRM
           require_config CONFIG_DRM_MSM
           require_config CONFIG_DRM_MSM_DSI
@@ -148,7 +159,7 @@ jobs:
           test "$(stat -c%s "$OUT/arch/arm64/boot/Image")" -gt 1000000
           test "$(stat -c%s "$OUT/arch/arm64/boot/dts/qcom/sm7150-xiaomi-sweet.dtb")" -gt 1000
 
-      - name: Package audit artifact
+      - name: Package kernel artifact
         working-directory: kernel
         run: |
           set -euo pipefail
@@ -175,8 +186,12 @@ jobs:
           ARM64 virtual address: 39-bit
           ARM64 physical address: 48-bit
           LPA2: disabled
+          Loop device: built-in
+          Root image filesystem: ext4
+          microSD filesystem: exFAT
+          exFAT driver: built-in
           DSC slice_per_pkt: 2
-          Artifact purpose: Kernel Image and Sweet DTB audit
+          Artifact purpose: Native UBports Sweet kernel
           EOF
 
           (
@@ -194,4 +209,4 @@ jobs:
           name: NATIVE-UBPORT-SWEET-IMAGE
           path: kernel/NATIVE-UBPORT-SWEET-IMAGE.zip
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 30
