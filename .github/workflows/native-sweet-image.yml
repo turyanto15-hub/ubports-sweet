@@ -135,6 +135,9 @@ jobs:
           require_config CONFIG_DRM_PANEL_SAMSUNG_AMS667YR01
           require_config CONFIG_TOUCHSCREEN_GOODIX_GTX8
 
+          echo "===== ARM64 ADDRESS CONFIG ====="
+          grep -E 'CONFIG_ARM64_(4K_PAGES|16K_PAGES|64K_PAGES|VA_BITS|PA_BITS|LPA2)' "$CONFIG" || true
+          
           if grep -q '^CONFIG_ARM64_LPA2=y' "$CONFIG"; then
             echo "::error::LPA2 must be disabled"
             exit 1
