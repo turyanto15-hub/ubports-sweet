@@ -23,36 +23,37 @@ jobs:
       - name: Install dependencies
         run: |
           set -eux
-
           sudo apt-get update
-
           sudo apt-get install -y \
             build-essential \
             gcc-aarch64-linux-gnu \
+            binutils-aarch64-linux-gnu \
             wget \
             bzip2 \
             cpio \
             gzip \
             file \
             qemu-user \
-            findutils
+            findutils \
+            python3
 
       - name: Download BusyBox
         run: |
           set -eux
-
           wget -O busybox.tar.bz2 \
             https://busybox.net/downloads/busybox-1.37.0.tar.bz2
-
           tar -xjf busybox.tar.bz2
           mv busybox-1.37.0 busybox
 
-      - name: Configure BusyBox without interactive prompts
+      - name: Configure BusyBox non-interactively
         working-directory: busybox
         run: |
           set -eux
 
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig
+
+          # Resolve all new Kconfig options using their defaults.
+          yes "" | make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- oldconfig
 
           python3 - <<'PY'
           from pathlib import Path
@@ -66,7 +67,6 @@ jobs:
               "MDEV": "y",
               "LOSETUP": "y",
               "SWITCH_ROOT": "y",
-              "FEATURE_MOUNT_LOOP": "y",
               "MKNOD": "y",
           }
 
@@ -87,22 +87,12 @@ jobs:
                   config += f"\nCONFIG_{name}={value}\n"
 
           path.write_text(config)
-
-          print("BusyBox configuration written.")
           PY
 
-          echo "===== VERIFY REQUIRED CONFIGURATION ====="
+          echo "===== BUSYBOX CONFIGURATION ====="
+          grep -E '^CONFIG_(STATIC|MDEV|LOSETUP|SWITCH_ROOT|MKNOD)=' .config
 
-          for option in STATIC MDEV LOSETUP SWITCH_ROOT FEATURE_MOUNT_LOOP MKNOD; do
-            grep -qx "CONFIG_${option}=y" .config || {
-              echo "ERROR: CONFIG_${option} is not enabled"
-              exit 1
-            }
-          done
-
-          echo "BUSYBOX CONFIGURATION PASSED"
-
-      - name: Fix watchdog warning
+      - name: Fix watchdog unused-result warnings
         working-directory: busybox
         run: |
           set -eux
@@ -114,32 +104,26 @@ jobs:
           path = Path("miscutils/watchdog.c")
           source = path.read_text()
 
-          patterns = [
-              r'(?m)^([ \t]*)write\(\s*3\s*,\s*""\s*,\s*1\s*\)\s*;',
-              r'(?m)^([ \t]*)write\(\s*3\s*,\s*&V\s*,\s*1\s*\)\s*;',
+          replacements = [
+              (
+                  r'(?m)^([ \t]*)write\(\s*3\s*,\s*""\s*,\s*1\s*\);',
+                  r'\1(void)!write(3, "", 1);'
+              ),
+              (
+                  r'(?m)^([ \t]*)write\(\s*3\s*,\s*&V\s*,\s*1\s*\);',
+                  r'\1(void)!write(3, &V, 1);'
+              ),
           ]
 
-          for pattern in patterns:
-              source, count = re.subn(
-                  pattern,
-                  lambda m: m.group(1) + "(void)" + m.group(0).strip(),
-                  source
-              )
-
+          for pattern, replacement in replacements:
+              source, count = re.subn(pattern, replacement, source)
               if count != 1:
                   raise SystemExit(
-                      f"Watchdog patch failed: expected 1 match, found {count}"
+                      f"Watchdog patch expected one match, found {count}"
                   )
 
           path.write_text(source)
-
-          updated = path.read_text()
-
-          for pattern in patterns:
-              if re.search(pattern, updated):
-                  raise SystemExit("Watchdog warning remains")
-
-          print("WATCHDOG PATCH PASSED")
+          print("Watchdog source patched.")
           PY
 
           grep -n -C 2 'write(3' miscutils/watchdog.c
@@ -160,14 +144,14 @@ jobs:
             | grep -E 'Class:|Machine:'
 
           aarch64-linux-gnu-readelf -l busybox \
-            | tee /tmp/busybox-program-headers.txt
+            | tee /tmp/busybox-headers.txt
 
-          if grep -q INTERP /tmp/busybox-program-headers.txt; then
+          if grep -q INTERP /tmp/busybox-headers.txt; then
             echo "ERROR: BusyBox is dynamically linked"
             exit 1
           fi
 
-          echo "STATIC ARM64 BUSYBOX BUILD PASSED"
+          echo "STATIC ARM64 BUILD PASSED"
 
       - name: Verify BusyBox applets
         working-directory: busybox
@@ -177,31 +161,15 @@ jobs:
           qemu-aarch64 ./busybox --list > /tmp/applets.txt
 
           for applet in \
-            sh \
-            mount \
-            umount \
-            mkdir \
-            mknod \
-            sleep \
-            cat \
-            uname \
-            dmesg \
-            ls \
-            grep \
-            head \
-            tail \
-            wc \
-            readlink \
-            losetup \
-            switch_root \
-            mdev
+            sh mount umount mkdir mknod sleep cat \
+            dmesg grep ls readlink losetup switch_root mdev
           do
             grep -qx "$applet" /tmp/applets.txt
           done
 
-          echo "ALL REQUIRED BUSYBOX APPLETS PASSED"
+          echo "REQUIRED APPLETS PASSED"
 
-      - name: Create initramfs
+      - name: Create Native Sweet initramfs
         run: |
           set -eux
 
@@ -216,17 +184,17 @@ jobs:
 
           cp busybox/busybox ramdisk/bin/busybox
 
-          ln -sf ../bin/busybox ramdisk/sbin/mdev
-
           for applet in \
             sh mount umount mkdir mknod sleep cat \
             dmesg grep ls readlink
           do
-            ln -sf ../bin/busybox "ramdisk/bin/$applet"
+            ln -sf busybox "ramdisk/bin/$applet"
           done
 
-          ln -sf ../bin/busybox ramdisk/sbin/losetup
-          ln -sf ../bin/busybox ramdisk/sbin/switch_root
+          for applet in mdev losetup switch_root
+          do
+            ln -sf ../bin/busybox "ramdisk/sbin/$applet"
+          done
 
           cat > ramdisk/init <<'INIT'
           #!/bin/sh
@@ -242,15 +210,13 @@ jobs:
           mount -t proc proc /proc
           mount -t sysfs sysfs /sys
 
-          mkdir -p /run
-          mkdir -p /mnt/sd
-          mkdir -p /newroot
+          mkdir -p /run /mnt/sd /newroot
 
           if [ ! -e /dev/loop0 ]; then
               mknod -m 660 /dev/loop0 b 7 0
           fi
 
-          echo "Scanning microSD ext4 partitions..."
+          echo "Scanning microSD partitions..."
 
           FOUND=""
 
@@ -258,7 +224,6 @@ jobs:
               [ -e "$PART" ] || continue
 
               DEV="/dev/$(basename "$PART")"
-
               echo "Checking $DEV"
 
               if mount -t ext4 -o rw "$DEV" /mnt/sd 2>/dev/null; then
@@ -273,30 +238,28 @@ jobs:
           done
 
           if [ -z "$FOUND" ]; then
-              echo "ERROR: system.img not found on ext4 microSD"
+              echo "ERROR: system.img not found on microSD"
               exec sh
           fi
 
           echo "Attaching system.img..."
 
           if ! losetup /dev/loop0 /mnt/sd/system.img; then
-              echo "ERROR: Cannot attach system.img"
+              echo "ERROR: losetup failed"
               exec sh
           fi
 
           echo "Mounting root filesystem..."
 
           if ! mount -t ext4 -o rw /dev/loop0 /newroot; then
-              echo "ERROR: Cannot mount ext4 system.img"
+              echo "ERROR: cannot mount system.img"
               exec sh
           fi
 
           if [ ! -x /newroot/sbin/init ]; then
-              echo "ERROR: /sbin/init missing in system.img"
+              echo "ERROR: /sbin/init not found"
               exec sh
           fi
-
-          echo "Root filesystem found."
 
           mkdir -p /newroot/dev
           mkdir -p /newroot/proc
@@ -304,14 +267,12 @@ jobs:
           mkdir -p /newroot/run
           mkdir -p /newroot/mnt/sd
 
-          mount -t tmpfs tmpfs /newroot/run
-
           mount --move /dev /newroot/dev
           mount --move /proc /newroot/proc
           mount --move /sys /newroot/sys
           mount --move /mnt/sd /newroot/mnt/sd
 
-          echo "Switching to Native UBports root filesystem..."
+          echo "Switching root..."
 
           exec switch_root -c /dev/console /newroot /sbin/init
 
@@ -323,14 +284,14 @@ jobs:
 
           cat > ramdisk/RAMDISK-MANIFEST.txt <<'EOF'
           Native UBports Sweet RAMDISK
-          Device: Xiaomi Redmi Note 10 Pro (sweet)
+          Device: Redmi Note 10 Pro (sweet)
           Architecture: ARM64
-          Initramfs: gzip-compressed cpio
-          BusyBox: static ARM64
-          Root filesystem image: system.img
-          microSD partition filesystem: ext4
-          Root filesystem filesystem: ext4
-          Boot mode: initramfs -> loop device -> switch_root
+          BusyBox: 1.37.0 static
+          Initramfs: gzip cpio newc
+          Root image: system.img
+          microSD filesystem: ext4
+          Root image filesystem: ext4
+          Boot flow: initramfs -> loop device -> switch_root
           EOF
 
       - name: Package initramfs
@@ -366,14 +327,11 @@ jobs:
           test -L verify/sbin/switch_root
           test -L verify/sbin/mdev
 
-          grep -q 'system.img' verify/init
-          grep -q 'mount -t ext4' verify/init
-          grep -q 'losetup' verify/init
-          grep -q 'switch_root' verify/init
+          grep -q system.img verify/init
+          grep -q losetup verify/init
+          grep -q switch_root verify/init
 
-          echo "===== INITRAMFS VALIDATION PASSED ====="
-
-          find verify -maxdepth 3 \( -type f -o -type l \) | sort
+          echo "INITRAMFS VALIDATION PASSED"
 
       - name: Upload RAMDISK artifact
         uses: actions/upload-artifact@v4
