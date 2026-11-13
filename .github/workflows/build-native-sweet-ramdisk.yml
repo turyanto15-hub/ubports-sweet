@@ -1,4 +1,3 @@
-
 name: Build Native Sweet RAMDISK
 
 on:
@@ -53,10 +52,8 @@ jobs:
 
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig
 
-          # Resolve all new configuration options using defaults.
           yes "" | make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- oldconfig
 
-          # Apply required configuration changes.
           python3 - <<'PY'
           from pathlib import Path
           import re
@@ -99,7 +96,6 @@ jobs:
           path.write_text(config)
           PY
 
-          # Reprocess the modified configuration non-interactively.
           yes "" | make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- oldconfig
 
           echo "===== VERIFY BUSYBOX CONFIGURATION ====="
@@ -213,7 +209,7 @@ jobs:
               DEV="/dev/$(basename "$PART")"
               echo "Checking $DEV"
 
-              if mount -t ext4 -o rw "$DEV" /mnt/sd 2>/dev/null; then
+              if mount -t exfat -o rw "$DEV" /mnt/sd 2>/dev/null; then
                   if [ -f /mnt/sd/system.img ]; then
                       FOUND="$DEV"
                       echo "Found system.img on $DEV"
@@ -276,7 +272,7 @@ jobs:
           BusyBox: 1.37.0 static
           Initramfs: gzip cpio newc
           Root image: system.img
-          microSD filesystem: ext4
+          microSD filesystem: exFAT
           Root image filesystem: ext4
           Boot flow: initramfs -> loop device -> switch_root
           EOF
@@ -315,6 +311,7 @@ jobs:
           test -L verify/sbin/mdev
 
           grep -q system.img verify/init
+          grep -q "mount -t exfat" verify/init
           grep -q losetup verify/init
           grep -q switch_root verify/init
 
