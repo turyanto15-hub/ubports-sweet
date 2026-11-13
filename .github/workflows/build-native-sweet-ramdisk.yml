@@ -1,0 +1,190 @@
+
+name: Build Native Sweet RAMDISK
+
+on:
+  workflow_dispatch:
+    inputs:
+      modules_run_id:
+        description: "GitHub Actions Run ID yang menghasilkan NATIVE-UBPORT-SWEET-MODULES"
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  build-ramdisk:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            gcc-aarch64-linux-gnu \
+            wget \
+            cpio \
+            gzip \
+            zstd \
+            bc \
+            bison \
+            flex
+
+      - name: Download kernel modules artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: NATIVE-UBPORT-SWEET-MODULES
+          run-id: ${{ inputs.modules_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: modules-artifact
+
+      - name: Extract exFAT kernel module
+        run: |
+          set -e
+          mkdir -p module-work
+          find modules-artifact -name '*.tar.gz' -exec tar -xzf {} -C module-work \;
+
+          MODULE="$(find module-work -name 'exfat.ko.zst' | head -n 1)"
+          test -n "$MODULE"
+
+          zstd -d "$MODULE" -o module-work/exfat.ko
+          file module-work/exfat.ko
+
+      - name: Build static ARM64 BusyBox
+        run: |
+          set -e
+          wget -q https://busybox.net/downloads/busybox-1.37.0.tar.bz2
+          tar -xf busybox-1.37.0.tar.bz2
+          cd busybox-1.37.0
+
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig
+
+          sed -i \
+            's/# CONFIG_STATIC is not set/CONFIG_STATIC=y/' \
+            .config
+
+          make -j2 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+            CONFIG_PREFIX="$GITHUB_WORKSPACE/ramdisk" install
+
+      - name: Prepare Native Sweet initramfs
+        run: |
+          set -e
+          R="$GITHUB_WORKSPACE/ramdisk"
+
+          mkdir -p "$R"/{dev,proc,sys,run,tmp,mnt/sd,newroot,lib/modules}
+
+          cp module-work/exfat.ko "$R/lib/modules/exfat.ko"
+
+          cat > "$R/init" <<'INIT'
+          #!/bin/sh
+
+          export PATH=/bin:/sbin
+          export HOME=/root
+
+          SD=/mnt/sd
+          ROOT=/newroot
+          IMAGE=sweet-system.img
+          LOOP=/dev/loop0
+
+          mkdir -p /dev /proc /sys /run /tmp "$SD" "$ROOT"
+
+          mount -t devtmpfs devtmpfs /dev
+          mount -t proc proc /proc
+          mount -t sysfs sysfs /sys
+
+          mdev -s
+
+          echo "Native Sweet: loading exFAT module"
+          insmod /lib/modules/exfat.ko
+
+          echo "Native Sweet: searching external SD card"
+
+          FOUND=0
+          COUNT=0
+
+          while [ "$COUNT" -lt 90 ]; do
+              mdev -s
+
+              for PART in /sys/class/block/mmcblk*p1; do
+                  [ -e "$PART" ] || continue
+                  DEV="/dev/$(basename "$PART")"
+
+                  if mount -t exfat "$DEV" "$SD"; then
+                      FOUND=1
+                      break
+                  fi
+              done
+
+              [ "$FOUND" -eq 1 ] && break
+              sleep 1
+              COUNT=$((COUNT + 1))
+          done
+
+          if [ "$FOUND" -ne 1 ]; then
+              echo "ERROR: exFAT SD card not found"
+              exec sh
+          fi
+
+          echo "Native Sweet: SD mounted"
+
+          if [ ! -f "$SD/$IMAGE" ]; then
+              echo "ERROR: sweet-system.img not found"
+              exec sh
+          fi
+
+          mknod "$LOOP" b 7 0 2>/dev/null
+          losetup "$LOOP" "$SD/$IMAGE"
+
+          if ! mount -t ext4 -o rw "$LOOP" "$ROOT"; then
+              echo "ERROR: Ubuntu rootfs mount failed"
+              exec sh
+          fi
+
+          if [ ! -x "$ROOT/sbin/init" ]; then
+              echo "ERROR: Ubuntu init not found"
+              exec sh
+          fi
+
+          mkdir -p "$ROOT/run"
+          mount -t tmpfs tmpfs "$ROOT/run"
+
+          mkdir -p "$ROOT/dev" "$ROOT/proc" "$ROOT/sys" "$ROOT/mnt/sd"
+
+          mount --move /dev "$ROOT/dev"
+          mount --move /proc "$ROOT/proc"
+          mount --move /sys "$ROOT/sys"
+          mount --move "$SD" "$ROOT/mnt/sd"
+
+          exec switch_root -c /dev/console "$ROOT" /sbin/init
+          INIT
+
+          chmod 0755 "$R/init"
+
+      - name: Package ARM64 initramfs
+        run: |
+          set -e
+          cd ramdisk
+
+          find . -print0 | cpio --null -o -H newc \
+            --owner=0:0 | gzip -9 > ../native-sweet-ramdisk.cpio.gz
+
+          cd ..
+          gzip -t native-sweet-ramdisk.cpio.gz
+          sha256sum native-sweet-ramdisk.cpio.gz \
+            > SHA256SUMS
+
+      - name: Upload Native Sweet RAMDISK
+        uses: actions/upload-artifact@v4
+        with:
+          name: NATIVE-UBPORT-SWEET-RAMDISK
+          path: |
+            native-sweet-ramdisk.cpio.gz
+            SHA256SUMS
+          if-no-files-found: error
+          retention-days: 30
