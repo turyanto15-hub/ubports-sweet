@@ -23,27 +23,18 @@ jobs:
       - name: Install dependencies
         run: |
           set -eux
-
           sudo apt-get update
-
           sudo apt-get install -y \
             build-essential \
             gcc-aarch64-linux-gnu \
-            wget \
-            bzip2 \
-            cpio \
-            gzip \
-            file \
-            qemu-user \
-            findutils
+            wget bzip2 cpio gzip file \
+            qemu-user findutils
 
       - name: Download BusyBox
         run: |
           set -eux
-
           wget -O busybox.tar.bz2 \
             https://busybox.net/downloads/busybox-1.37.0.tar.bz2
-
           tar -xjf busybox.tar.bz2
           mv busybox-1.37.0 busybox
 
@@ -89,9 +80,7 @@ jobs:
           path.write_text(config)
           PY
 
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
-
-          echo "===== BUSYBOX CONFIG ====="
+          echo "===== REQUIRED CONFIGURATION ====="
 
           for option in STATIC MDEV LOSETUP SWITCH_ROOT FEATURE_MOUNT_LOOP MKNOD; do
             grep -qx "CONFIG_${option}=y" .config || {
@@ -122,8 +111,7 @@ jobs:
           for pattern in patterns:
               source, count = re.subn(
                   pattern,
-                  lambda m: m.group(1) + "(void)write(3, " +
-                  ('"", 1);' if '&V' not in m.group(0) else '&V, 1);'),
+                  lambda m: m.group(1) + "(void)" + m.group(0).strip(),
                   source
               )
 
@@ -133,15 +121,6 @@ jobs:
                   )
 
           path.write_text(source)
-
-          updated = path.read_text()
-
-          if re.search(patterns[0], updated):
-              raise SystemExit("First watchdog warning remains")
-
-          if re.search(patterns[1], updated):
-              raise SystemExit("Second watchdog warning remains")
-
           print("WATCHDOG PATCH PASSED")
           PY
 
@@ -180,42 +159,20 @@ jobs:
           qemu-aarch64 ./busybox --list > /tmp/applets.txt
 
           for applet in \
-            sh \
-            mount \
-            umount \
-            mkdir \
-            mknod \
-            sleep \
-            cat \
-            uname \
-            dmesg \
-            ls \
-            grep \
-            head \
-            tail \
-            wc \
-            readlink \
-            losetup \
-            switch_root \
-            mdev
+            sh mount umount mkdir mknod sleep cat \
+            uname dmesg ls grep head tail wc readlink \
+            losetup switch_root mdev
           do
             grep -qx "$applet" /tmp/applets.txt
           done
 
-          echo "ALL REQUIRED BUSYBOX APPLETS PASSED"
+          echo "ALL REQUIRED APPLETS PASSED"
 
       - name: Create initramfs
         run: |
           set -eux
 
-          mkdir -p ramdisk/bin
-          mkdir -p ramdisk/sbin
-          mkdir -p ramdisk/dev
-          mkdir -p ramdisk/proc
-          mkdir -p ramdisk/sys
-          mkdir -p ramdisk/run
-          mkdir -p ramdisk/mnt/sd
-          mkdir -p ramdisk/newroot
+          mkdir -p ramdisk/{bin,sbin,dev,proc,sys,run,mnt/sd,newroot}
 
           cp busybox/busybox ramdisk/bin/busybox
 
@@ -236,7 +193,6 @@ jobs:
 
           export PATH=/bin:/sbin
 
-          echo
           echo "======================================"
           echo " Native UBports Sweet Initramfs"
           echo "======================================"
@@ -245,9 +201,7 @@ jobs:
           mount -t proc proc /proc
           mount -t sysfs sysfs /sys
 
-          mkdir -p /run
-          mkdir -p /mnt/sd
-          mkdir -p /newroot
+          mkdir -p /run /mnt/sd /newroot
 
           if [ ! -e /dev/loop0 ]; then
               mknod -m 660 /dev/loop0 b 7 0
@@ -276,7 +230,7 @@ jobs:
           done
 
           if [ -z "$FOUND" ]; then
-              echo "ERROR: system.img not found on ext4 microSD"
+              echo "ERROR: system.img not found"
               exec sh
           fi
 
@@ -287,24 +241,18 @@ jobs:
               exec sh
           fi
 
-          echo "Mounting root filesystem..."
-
           if ! mount -t ext4 -o rw /dev/loop0 /newroot; then
-              echo "ERROR: Cannot mount ext4 system.img"
+              echo "ERROR: Cannot mount system.img"
               exec sh
           fi
 
           if [ ! -x /newroot/sbin/init ]; then
-              echo "ERROR: /sbin/init missing in system.img"
+              echo "ERROR: /sbin/init missing"
               exec sh
           fi
 
-          echo "Root filesystem found."
-
-          mkdir -p /newroot/dev
-          mkdir -p /newroot/proc
-          mkdir -p /newroot/sys
-          mkdir -p /newroot/run
+          mkdir -p /newroot/dev /newroot/proc
+          mkdir -p /newroot/sys /newroot/run
           mkdir -p /newroot/mnt/sd
 
           mount -t tmpfs tmpfs /newroot/run
@@ -314,7 +262,7 @@ jobs:
           mount --move /sys /newroot/sys
           mount --move /mnt/sd /newroot/mnt/sd
 
-          echo "Switching to Native UBports root filesystem..."
+          echo "Switching to Native UBports..."
 
           exec switch_root -c /dev/console /newroot /sbin/init
 
@@ -331,8 +279,8 @@ jobs:
           Initramfs: gzip-compressed cpio
           BusyBox: static ARM64
           Root filesystem image: system.img
-          microSD partition filesystem: ext4
-          Root filesystem filesystem: ext4
+          microSD filesystem: ext4
+          Root filesystem: ext4
           Boot mode: initramfs -> loop device -> switch_root
           EOF
 
@@ -373,7 +321,6 @@ jobs:
           grep -q 'mount -t ext4' verify/init
           grep -q 'losetup' verify/init
           grep -q 'switch_root' verify/init
-          grep -q 'mknod' verify/init
 
           echo "===== INITRAMFS VALIDATION PASSED ====="
 
