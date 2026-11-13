@@ -53,8 +53,10 @@ jobs:
           set -euo pipefail
 
           ACTUAL_COMMIT="$(git rev-parse HEAD)"
+
           echo "Expected: $EXPECTED_COMMIT"
           echo "Actual:   $ACTUAL_COMMIT"
+
           test "$ACTUAL_COMMIT" = "$EXPECTED_COMMIT"
 
           test -f arch/arm64/configs/sm7150.config
@@ -64,9 +66,9 @@ jobs:
 
           grep -n 'slice_per_pkt' \
             drivers/gpu/drm/msm/dsi/dsi_host.c
+
           grep -n 'slice_per_pkt = 2' \
             drivers/gpu/drm/panel/panel-samsung-ams667yr01.c
-
 
       - name: Configure ARM64 kernel
         working-directory: kernel
@@ -82,6 +84,9 @@ jobs:
 
           ./scripts/config --file "$OUT/.config" \
             --enable ARM64_4K_PAGES \
+            --disable ARM64_LPA2 \
+            --disable ARM64_16K_PAGES \
+            --disable ARM64_64K_PAGES \
             --enable BLK_DEV_LOOP \
             --enable EXT4_FS \
             --enable EXFAT_FS \
@@ -96,18 +101,17 @@ jobs:
           make O="$OUT" ARCH="$ARCH" \
             CROSS_COMPILE="$CROSS_COMPILE" olddefconfig
 
-          echo "===== FINAL ARM64 ADDRESS CONFIG ====="
-          grep -E 'CONFIG_ARM64_(4K_PAGES|VA_BITS|PA_BITS)|CONFIG_EXFAT_FS' \
-            "$OUT/.config" || true
+          echo "===== FINAL KERNEL CONFIGURATION ====="
 
-          echo "===== KCONFIG DEFINITIONS ====="
-          grep -nE 'ARM64_VA_BITS|ARM64_PA_BITS' \
-            arch/arm64/Kconfig
+          grep -E \
+            'CONFIG_ARM64_4K_PAGES|CONFIG_ARM64_VA_BITS|CONFIG_ARM64_PA_BITS|CONFIG_EXFAT_FS|CONFIG_EXT4_FS|CONFIG_BLK_DEV_LOOP' \
+            "$OUT/.config" || true
 
       - name: Validate final kernel configuration
         working-directory: kernel
         run: |
           set -euo pipefail
+
           CONFIG="$OUT/.config"
 
           require_config() {
@@ -115,12 +119,11 @@ jobs:
               echo "::error::Required config missing: $1=y"
               exit 1
             fi
+
             echo "OK: $1=y"
           }
 
           require_config CONFIG_ARM64_4K_PAGES
-          require_config CONFIG_ARM64_VA_BITS_39
-          require_config CONFIG_ARM64_PA_BITS_48
           require_config CONFIG_BLK_DEV_LOOP
           require_config CONFIG_EXT4_FS
           require_config CONFIG_EXFAT_FS
@@ -133,11 +136,18 @@ jobs:
           require_config CONFIG_TOUCHSCREEN_GOODIX_GTX8
 
           if grep -q '^CONFIG_ARM64_LPA2=y' "$CONFIG"; then
-            echo "::error::LPA2 must be disabled for this target"
+            echo "::error::LPA2 must be disabled"
+            exit 1
+          fi
+
+          if grep -q '^CONFIG_EXFAT_FS=m' "$CONFIG"; then
+            echo "::error::EXFAT must be built into the kernel, not a module"
             exit 1
           fi
 
           cp "$CONFIG" kernel.config
+
+          echo "KERNEL CONFIGURATION VALIDATION PASSED"
 
       - name: Build kernel Image and Sweet DTB
         working-directory: kernel
@@ -149,8 +159,13 @@ jobs:
             Image dtbs 2>&1 | tee kernel-build.log
 
           test -s "$OUT/arch/arm64/boot/Image"
-          test -s "$OUT/arch/arm64/boot/dts/qcom/sm7150-xiaomi-sweet.dtb"
+
+          test -s \
+            "$OUT/arch/arm64/boot/dts/qcom/sm7150-xiaomi-sweet.dtb"
+
           test -s "$OUT/System.map"
+
+          echo "KERNEL AND SWEET DTB BUILD PASSED"
 
       - name: Verify build outputs
         working-directory: kernel
@@ -158,10 +173,18 @@ jobs:
           set -euo pipefail
 
           file "$OUT/arch/arm64/boot/Image"
-          file "$OUT/arch/arm64/boot/dts/qcom/sm7150-xiaomi-sweet.dtb"
+
+          file \
+            "$OUT/arch/arm64/boot/dts/qcom/sm7150-xiaomi-sweet.dtb"
 
           test "$(stat -c%s "$OUT/arch/arm64/boot/Image")" -gt 1000000
-          test "$(stat -c%s "$OUT/arch/arm64/boot/dts/qcom/sm7150-xiaomi-sweet.dtb")" -gt 1000
+
+          test "$(
+            stat -c%s \
+              "$OUT/arch/arm64/boot/dts/qcom/sm7150-xiaomi-sweet.dtb"
+          )" -gt 1000
+
+          echo "BUILD OUTPUT VALIDATION PASSED"
 
       - name: Package kernel artifact
         working-directory: kernel
@@ -169,11 +192,16 @@ jobs:
           set -euo pipefail
 
           PACKAGE="NATIVE-UBPORT-SWEET-IMAGE"
+
           mkdir -p "$PACKAGE"
 
-          cp "$OUT/arch/arm64/boot/Image" "$PACKAGE/Image"
-          cp "$OUT/arch/arm64/boot/dts/qcom/sm7150-xiaomi-sweet.dtb" \
+          cp "$OUT/arch/arm64/boot/Image" \
+            "$PACKAGE/Image"
+
+          cp \
+            "$OUT/arch/arm64/boot/dts/qcom/sm7150-xiaomi-sweet.dtb" \
             "$PACKAGE/sm7150-xiaomi-sweet.dtb"
+
           cp "$OUT/System.map" "$PACKAGE/System.map"
           cp kernel.config "$PACKAGE/kernel.config"
           cp kernel-build.log "$PACKAGE/kernel-build.log"
@@ -187,25 +215,31 @@ jobs:
           Source commit: $EXPECTED_COMMIT
           Build targets: Image, sm7150-xiaomi-sweet.dtb
           ARM64 page size: 4K
-          ARM64 virtual address: 39-bit
-          ARM64 physical address: 48-bit
-          LPA2: disabled
           Loop device: built-in
           Root image filesystem: ext4
           microSD filesystem: exFAT
           exFAT driver: built-in
+          LPA2: disabled
           DSC slice_per_pkt: 2
           Artifact purpose: Native UBports Sweet kernel
           EOF
 
           (
             cd "$PACKAGE"
-            sha256sum Image sm7150-xiaomi-sweet.dtb \
-              System.map kernel.config kernel-build.log \
-              manifest.txt > SHA256SUMS
+
+            sha256sum \
+              Image \
+              sm7150-xiaomi-sweet.dtb \
+              System.map \
+              kernel.config \
+              kernel-build.log \
+              manifest.txt \
+              > SHA256SUMS
           )
 
           zip -r NATIVE-UBPORT-SWEET-IMAGE.zip "$PACKAGE"
+
+          test -s NATIVE-UBPORT-SWEET-IMAGE.zip
 
       - name: Upload kernel artifact
         uses: actions/upload-artifact@v4
@@ -214,3 +248,4 @@ jobs:
           path: kernel/NATIVE-UBPORT-SWEET-IMAGE.zip
           if-no-files-found: error
           retention-days: 30
+          
