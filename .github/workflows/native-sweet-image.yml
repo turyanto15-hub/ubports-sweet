@@ -67,6 +67,7 @@ jobs:
           grep -n 'slice_per_pkt = 2' \
             drivers/gpu/drm/panel/panel-samsung-ams667yr01.c
 
+
       - name: Configure ARM64 kernel
         working-directory: kernel
         run: |
@@ -81,11 +82,6 @@ jobs:
 
           ./scripts/config --file "$OUT/.config" \
             --enable ARM64_4K_PAGES \
-            --enable ARM64_VA_BITS_39 \
-            --enable ARM64_PA_BITS_48 \
-            --disable ARM64_LPA2 \
-            --disable ARM64_16K_PAGES \
-            --disable ARM64_64K_PAGES \
             --enable BLK_DEV_LOOP \
             --enable EXT4_FS \
             --enable EXFAT_FS \
@@ -99,6 +95,14 @@ jobs:
 
           make O="$OUT" ARCH="$ARCH" \
             CROSS_COMPILE="$CROSS_COMPILE" olddefconfig
+
+          echo "===== FINAL ARM64 ADDRESS CONFIG ====="
+          grep -E 'CONFIG_ARM64_(4K_PAGES|VA_BITS|PA_BITS)|CONFIG_EXFAT_FS' \
+            "$OUT/.config" || true
+
+          echo "===== KCONFIG DEFINITIONS ====="
+          grep -nE 'ARM64_VA_BITS|ARM64_PA_BITS' \
+            arch/arm64/Kconfig
 
       - name: Validate final kernel configuration
         working-directory: kernel
