@@ -23,7 +23,9 @@ jobs:
       - name: Install dependencies
         run: |
           set -eux
+
           sudo apt-get update
+
           sudo apt-get install -y \
             build-essential \
             gcc-aarch64-linux-gnu \
@@ -38,13 +40,12 @@ jobs:
       - name: Download BusyBox
         run: |
           set -eux
+
           wget -O busybox.tar.bz2 \
             https://busybox.net/downloads/busybox-1.37.0.tar.bz2
 
           tar -xjf busybox.tar.bz2
           mv busybox-1.37.0 busybox
-
-
 
       - name: Configure BusyBox
         working-directory: busybox
@@ -60,39 +61,37 @@ jobs:
           path = Path(".config")
           config = path.read_text()
 
-          required = [
-              "STATIC",
-              "MDEV",
-              "LOSETUP",
-              "SWITCH_ROOT",
-              "FEATURE_MOUNT_LOOP",
-              "MKNOD",
-          ]
+          required = {
+              "STATIC": "y",
+              "MDEV": "y",
+              "LOSETUP": "y",
+              "SWITCH_ROOT": "y",
+              "FEATURE_MOUNT_LOOP": "y",
+              "MKNOD": "y",
+          }
 
-          for option in required:
+          for name, value in required.items():
               pattern = (
-                  r"^CONFIG_" + re.escape(option) + r"=.*$"
-                  r"|^# CONFIG_" + re.escape(option) + r" is not set$"
+                  rf"^CONFIG_{name}=.*$"
+                  rf"|^# CONFIG_{name} is not set$"
               )
 
               config, count = re.subn(
                   pattern,
-                  "CONFIG_" + option + "=y",
+                  f"CONFIG_{name}={value}",
                   config,
                   flags=re.MULTILINE
               )
 
               if count == 0:
-                  config += "\nCONFIG_" + option + "=y\n"
+                  config += f"\nCONFIG_{name}={value}\n"
 
           path.write_text(config)
-
-          print("Required BusyBox configuration written.")
           PY
 
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- oldconfig </dev/null
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
 
-          echo "===== VERIFY CONFIG ====="
+          echo "===== BUSYBOX CONFIG ====="
 
           for option in STATIC MDEV LOSETUP SWITCH_ROOT FEATURE_MOUNT_LOOP MKNOD; do
             grep -qx "CONFIG_${option}=y" .config || {
@@ -102,7 +101,6 @@ jobs:
           done
 
           echo "BUSYBOX CONFIGURATION PASSED"
-
 
       - name: Fix watchdog warning
         working-directory: busybox
@@ -117,42 +115,36 @@ jobs:
           source = path.read_text()
 
           patterns = [
-              (
-                  r'(?m)^([ \t]*)write\(\s*3\s*,\s*""\s*,\s*1\s*\)\s*;([ \t]*(?:/\*.*?\*/)?[ \t]*)$',
-                  'if (write(3, "", 1) < 0) { }'
-              ),
-              (
-                  r'(?m)^([ \t]*)write\(\s*3\s*,\s*&V\s*,\s*1\s*\)\s*;([ \t]*(?:/\*.*?\*/)?[ \t]*)$',
-                  'if (write(3, &V, 1) < 0) { }'
-              )
+              r'(?m)^([ \t]*)write\(\s*3\s*,\s*""\s*,\s*1\s*\)\s*;',
+              r'(?m)^([ \t]*)write\(\s*3\s*,\s*&V\s*,\s*1\s*\)\s*;',
           ]
 
-          for pattern, replacement in patterns:
+          for pattern in patterns:
               source, count = re.subn(
                   pattern,
-                  lambda m: m.group(1) + replacement + m.group(2),
+                  lambda m: m.group(1) + "(void)write(3, " +
+                  ('"", 1);' if '&V' not in m.group(0) else '&V, 1);'),
                   source
               )
 
               if count != 1:
                   raise SystemExit(
-                      f"Watchdog patch failed: expected 1 match, found {count}"
+                      f"Watchdog patch failed: expected 1 match, got {count}"
                   )
 
           path.write_text(source)
 
           updated = path.read_text()
 
-          if re.search(r'(?m)^\s*write\(\s*3\s*,\s*""\s*,\s*1\s*\)\s*;', updated):
+          if re.search(patterns[0], updated):
               raise SystemExit("First watchdog warning remains")
 
-          if re.search(r'(?m)^\s*write\(\s*3\s*,\s*&V\s*,\s*1\s*\)\s*;', updated):
+          if re.search(patterns[1], updated):
               raise SystemExit("Second watchdog warning remains")
 
-          print("Both watchdog write calls patched successfully.")
+          print("WATCHDOG PATCH PASSED")
           PY
 
-          echo "===== PATCHED WATCHDOG ====="
           grep -n -C 2 'write(3' miscutils/watchdog.c
 
       - name: Build static ARM64 BusyBox
@@ -167,7 +159,8 @@ jobs:
 
           file busybox
 
-          aarch64-linux-gnu-readelf -h busybox | grep -E 'Class:|Machine:'
+          aarch64-linux-gnu-readelf -h busybox \
+            | grep -E 'Class:|Machine:'
 
           aarch64-linux-gnu-readelf -l busybox \
             | tee /tmp/busybox-program-headers.txt
