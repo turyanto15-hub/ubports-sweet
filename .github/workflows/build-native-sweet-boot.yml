@@ -1,0 +1,179 @@
+
+name: Build Native Sweet Boot Image
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  build-boot:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Find kernel and ramdisk artifacts
+        id: find
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const runs = await github.paginate(
+              github.rest.actions.listWorkflowRunsForRepo,
+              { owner, repo, status: "success", per_page: 100 }
+            );
+
+            let image = null;
+            let ramdisk = null;
+
+            for (const run of runs) {
+              const artifacts = await github.paginate(
+                github.rest.actions.listWorkflowRunArtifacts,
+                { owner, repo, run_id: run.id, per_page: 100 }
+              );
+
+              if (!image) {
+                const a = artifacts.find(x =>
+                  /^NATIVE-UBPORT-SWEET-IMAGE(?:-|$)/.test(x.name) &&
+                  !x.expired
+                );
+                if (a) image = { run: run.id, name: a.name };
+              }
+
+              if (!ramdisk) {
+                const a = artifacts.find(x =>
+                  x.name === "NATIVE-UBPORT-SWEET-RAMDISK" &&
+                  !x.expired
+                );
+                if (a) ramdisk = { run: run.id, name: a.name };
+              }
+
+              if (image && ramdisk) break;
+            }
+
+            if (!image) core.setFailed("Kernel Image artifact tidak ditemukan.");
+            if (!ramdisk) core.setFailed("Ramdisk artifact tidak ditemukan.");
+
+            core.setOutput("image_run", String(image.run));
+            core.setOutput("image_name", image.name);
+            core.setOutput("ramdisk_run", String(ramdisk.run));
+            core.setOutput("ramdisk_name", ramdisk.name);
+
+      - name: Download kernel artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ steps.find.outputs.image_name }}
+          run-id: ${{ steps.find.outputs.image_run }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: kernel-artifact
+
+      - name: Download ramdisk artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ steps.find.outputs.ramdisk_name }}
+          run-id: ${{ steps.find.outputs.ramdisk_run }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: ramdisk-artifact
+
+      - name: Extract kernel Image and Sweet DTB
+        run: |
+          set -e
+          mkdir -p kernel-extract
+
+          python3 - <<'PY'
+          import zipfile
+          from pathlib import Path
+
+          root = Path("kernel-artifact")
+          seen = set()
+
+          for _ in range(8):
+              pending = [
+                  p for p in root.rglob("*.zip")
+                  if str(p.resolve()) not in seen
+              ]
+              if not pending:
+                  break
+              for z in pending:
+                  seen.add(str(z.resolve()))
+                  with zipfile.ZipFile(z) as f:
+                      f.extractall(root)
+          PY
+
+          IMAGE="$(find kernel-artifact -type f -name Image | head -n 1)"
+          DTB="$(find kernel-artifact -type f \
+            -name sm7150-xiaomi-sweet.dtb | head -n 1)"
+
+          test -n "$IMAGE"
+          test -n "$DTB"
+
+          cp "$IMAGE" kernel.Image
+          cp "$DTB" sweet.dtb
+
+          file kernel.Image sweet.dtb
+
+      - name: Extract ramdisk
+        run: |
+          set -e
+
+          RAMDISK="$(find ramdisk-artifact -type f \
+            -name native-sweet-ramdisk.cpio.gz | head -n 1)"
+
+          test -n "$RAMDISK"
+          cp "$RAMDISK" ramdisk.cpio.gz
+
+          gzip -t ramdisk.cpio.gz
+          sha256sum kernel.Image sweet.dtb ramdisk.cpio.gz
+
+      - name: Obtain Android mkbootimg
+        run: |
+          git clone --depth 1 \
+            https://android.googlesource.com/platform/system/tools/mkbootimg \
+            mkbootimg
+
+      - name: Build boot.img candidate
+        run: |
+          set -e
+
+          python3 mkbootimg/mkbootimg.py \
+            --kernel kernel.Image \
+            --ramdisk ramdisk.cpio.gz \
+            --dtb sweet.dtb \
+            --header_version 2 \
+            --pagesize 4096 \
+            --base 0 \
+            --kernel_offset 0x8000 \
+            --ramdisk_offset 0x1000000 \
+            --tags_offset 0x100 \
+            --dtb_offset 0x1f00000 \
+            --cmdline "console=tty0 loglevel=8 ignore_loglevel" \
+            -o boot.img
+
+          test -s boot.img
+          file boot.img
+          sha256sum boot.img | tee BOOT-SHA256.txt
+
+          cat > BOOT-MANIFEST.txt <<'EOF'
+          Device: Redmi Note 10 Pro (sweet)
+          Kernel: Native Sweet selected Image artifact
+          DTB: sm7150-xiaomi-sweet.dtb
+          Ramdisk: Native Sweet generated ramdisk
+          Header version: 2
+          Page size: 4096
+          Status: Candidate only - not device boot validated
+          EOF
+
+      - name: Upload boot image candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: NATIVE-UBPORT-SWEET-BOOT-CANDIDATE
+          path: |
+            boot.img
+            BOOT-SHA256.txt
+            BOOT-MANIFEST.txt
+          if-no-files-found: error
+          retention-days: 30
