@@ -87,6 +87,7 @@ jobs:
           zstd -d "$MODULE" -o module-work/exfat.ko
           file module-work/exfat.ko
 
+
       - name: Build static ARM64 BusyBox
         run: |
           set -e
@@ -95,9 +96,24 @@ jobs:
           cd busybox-1.37.0
 
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig
-          sed -i 's/# CONFIG_STATIC is not set/CONFIG_STATIC=y/' .config
+
+          # Disable SHA-NI optimization causing sha1 symbol error
+          sed -i \
+            -e 's/^CONFIG_SHA1_HWACCEL=y/# CONFIG_SHA1_HWACCEL is not set/' \
+            -e 's/^CONFIG_SHA1_HWACCEL=n/# CONFIG_SHA1_HWACCEL is not set/' \
+            .config
+
+          # Enable static binary
+          sed -i \
+            's/# CONFIG_STATIC is not set/CONFIG_STATIC=y/' \
+            .config
+
+          make oldconfig </dev/null
+
+          grep -E 'CONFIG_STATIC=|CONFIG_SHA1_HWACCEL' .config || true
 
           make -j2 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
+
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
             CONFIG_PREFIX="$GITHUB_WORKSPACE/ramdisk" install
 
