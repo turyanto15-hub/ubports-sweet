@@ -1,3 +1,4 @@
+
 name: Build Native Sweet RAMDISK
 
 on:
@@ -21,6 +22,7 @@ jobs:
 
       - name: Install dependencies
         run: |
+          set -eux
           sudo apt-get update
           sudo apt-get install -y \
             build-essential \
@@ -36,7 +38,6 @@ jobs:
       - name: Download BusyBox
         run: |
           set -eux
-
           wget -O busybox.tar.bz2 \
             https://busybox.net/downloads/busybox-1.37.0.tar.bz2
 
@@ -56,12 +57,13 @@ jobs:
             -e 's/^# CONFIG_LOSETUP is not set/CONFIG_LOSETUP=y/' \
             -e 's/^# CONFIG_SWITCH_ROOT is not set/CONFIG_SWITCH_ROOT=y/' \
             -e 's/^# CONFIG_FEATURE_MOUNT_LOOP is not set/CONFIG_FEATURE_MOUNT_LOOP=y/' \
+            -e 's/^# CONFIG_MKNOD is not set/CONFIG_MKNOD=y/' \
             .config
 
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- oldconfig </dev/null
 
           echo "===== BUSYBOX CONFIG ====="
-          grep -E '^CONFIG_(STATIC|MDEV|LOSETUP|SWITCH_ROOT|FEATURE_MOUNT_LOOP)=' .config
+          grep -E '^CONFIG_(STATIC|MDEV|LOSETUP|SWITCH_ROOT|FEATURE_MOUNT_LOOP|MKNOD)=' .config
 
       - name: Fix watchdog warning
         working-directory: busybox
@@ -70,32 +72,49 @@ jobs:
 
           python3 - <<'PY'
           from pathlib import Path
+          import re
 
           path = Path("miscutils/watchdog.c")
           source = path.read_text()
 
-          source = source.replace(
-              'write(3, "", 1); /* write zero byte */',
-              '(void)!write(3, "", 1); /* write zero byte */'
-          )
+          patterns = [
+              (
+                  r'(?m)^([ \t]*)write\(\s*3\s*,\s*""\s*,\s*1\s*\)\s*;([ \t]*(?:/\*.*?\*/)?[ \t]*)$',
+                  'if (write(3, "", 1) < 0) { }'
+              ),
+              (
+                  r'(?m)^([ \t]*)write\(\s*3\s*,\s*&V\s*,\s*1\s*\)\s*;([ \t]*(?:/\*.*?\*/)?[ \t]*)$',
+                  'if (write(3, &V, 1) < 0) { }'
+              )
+          ]
 
-          source = source.replace(
-              'write(3, &V, 1);  /* Magic, see watchdog-api.txt in kernel */',
-              '(void)!write(3, &V, 1);  /* Magic, see watchdog-api.txt in kernel */'
-          )
+          for pattern, replacement in patterns:
+              source, count = re.subn(
+                  pattern,
+                  lambda m: m.group(1) + replacement + m.group(2),
+                  source
+              )
+
+              if count != 1:
+                  raise SystemExit(
+                      f"Watchdog patch failed: expected 1 match, found {count}"
+                  )
 
           path.write_text(source)
 
-          if 'write(3, "", 1); /* write zero byte */' in source:
-              raise SystemExit("watchdog first warning fix failed")
+          updated = path.read_text()
 
-          if 'write(3, &V, 1);  /* Magic, see watchdog-api.txt in kernel */' in source:
-              raise SystemExit("watchdog second warning fix failed")
+          if re.search(r'(?m)^\s*write\(\s*3\s*,\s*""\s*,\s*1\s*\)\s*;', updated):
+              raise SystemExit("First watchdog warning remains")
 
-          print("watchdog.c warning fixes applied")
+          if re.search(r'(?m)^\s*write\(\s*3\s*,\s*&V\s*,\s*1\s*\)\s*;', updated):
+              raise SystemExit("Second watchdog warning remains")
+
+          print("Both watchdog write calls patched successfully.")
           PY
 
-          grep -n 'write(3' miscutils/watchdog.c
+          echo "===== PATCHED WATCHDOG ====="
+          grep -n -C 2 'write(3' miscutils/watchdog.c
 
       - name: Build static ARM64 BusyBox
         working-directory: busybox
@@ -110,12 +129,16 @@ jobs:
           file busybox
 
           aarch64-linux-gnu-readelf -h busybox | grep -E 'Class:|Machine:'
-          aarch64-linux-gnu-readelf -l busybox | tee /tmp/busybox-program-headers.txt
+
+          aarch64-linux-gnu-readelf -l busybox \
+            | tee /tmp/busybox-program-headers.txt
 
           if grep -q INTERP /tmp/busybox-program-headers.txt; then
             echo "ERROR: BusyBox is dynamically linked"
             exit 1
           fi
+
+          echo "STATIC ARM64 BUSYBOX BUILD PASSED"
 
       - name: Verify BusyBox applets
         working-directory: busybox
@@ -127,6 +150,7 @@ jobs:
           for applet in \
             sh \
             mount \
+            umount \
             mkdir \
             mknod \
             sleep \
@@ -146,7 +170,7 @@ jobs:
             grep -qx "$applet" /tmp/applets.txt
           done
 
-          echo "All required BusyBox applets are available."
+          echo "ALL REQUIRED BUSYBOX APPLETS PASSED"
 
       - name: Create initramfs
         run: |
@@ -164,16 +188,14 @@ jobs:
           cp busybox/busybox ramdisk/bin/busybox
 
           ln -sf ../bin/busybox ramdisk/sbin/mdev
-          ln -sf ../bin/busybox ramdisk/bin/sh
-          ln -sf ../bin/busybox ramdisk/bin/mount
-          ln -sf ../bin/busybox ramdisk/bin/umount
-          ln -sf ../bin/busybox ramdisk/bin/mkdir
-          ln -sf ../bin/busybox ramdisk/bin/sleep
-          ln -sf ../bin/busybox ramdisk/bin/cat
-          ln -sf ../bin/busybox ramdisk/bin/dmesg
-          ln -sf ../bin/busybox ramdisk/bin/grep
-          ln -sf ../bin/busybox ramdisk/bin/ls
-          ln -sf ../bin/busybox ramdisk/bin/readlink
+
+          for applet in \
+            sh mount umount mkdir mknod sleep cat \
+            dmesg grep ls readlink
+          do
+            ln -sf ../bin/busybox "ramdisk/bin/$applet"
+          done
+
           ln -sf ../bin/busybox ramdisk/sbin/losetup
           ln -sf ../bin/busybox ramdisk/sbin/switch_root
 
@@ -195,6 +217,10 @@ jobs:
           mkdir -p /mnt/sd
           mkdir -p /newroot
 
+          if [ ! -e /dev/loop0 ]; then
+              mknod -m 660 /dev/loop0 b 7 0
+          fi
+
           echo "Scanning microSD ext4 partitions..."
 
           FOUND=""
@@ -206,7 +232,7 @@ jobs:
 
               echo "Checking $DEV"
 
-              if mount -t ext4 -o ro "$DEV" /mnt/sd 2>/dev/null; then
+              if mount -t ext4 -o rw "$DEV" /mnt/sd 2>/dev/null; then
                   if [ -f /mnt/sd/system.img ]; then
                       FOUND="$DEV"
                       echo "Found system.img on $DEV"
@@ -224,9 +250,12 @@ jobs:
 
           echo "Attaching system.img..."
 
-          losetup /dev/loop0 /mnt/sd/system.img
+          if ! losetup /dev/loop0 /mnt/sd/system.img; then
+              echo "ERROR: Cannot attach system.img"
+              exec sh
+          fi
 
-          mkdir -p /newroot
+          echo "Mounting root filesystem..."
 
           if ! mount -t ext4 -o rw /dev/loop0 /newroot; then
               echo "ERROR: Cannot mount ext4 system.img"
@@ -239,7 +268,6 @@ jobs:
           fi
 
           echo "Root filesystem found."
-          echo "Preparing system transition..."
 
           mkdir -p /newroot/dev
           mkdir -p /newroot/proc
@@ -291,8 +319,7 @@ jobs:
           file native-sweet-ramdisk.cpio.gz
           ls -lh native-sweet-ramdisk.cpio.gz
 
-          sha256sum native-sweet-ramdisk.cpio.gz \
-            > SHA256SUMS
+          sha256sum native-sweet-ramdisk.cpio.gz > SHA256SUMS
 
       - name: Validate initramfs
         run: |
@@ -308,14 +335,17 @@ jobs:
           test -L verify/bin/sh
           test -L verify/sbin/losetup
           test -L verify/sbin/switch_root
+          test -L verify/sbin/mdev
 
           grep -q 'system.img' verify/init
           grep -q 'mount -t ext4' verify/init
+          grep -q 'losetup' verify/init
           grep -q 'switch_root' verify/init
+          grep -q 'mknod' verify/init
 
           echo "===== INITRAMFS VALIDATION PASSED ====="
 
-          find verify -maxdepth 3 -type f -o -type l | sort
+          find verify -maxdepth 3 \( -type f -o -type l \) | sort
 
       - name: Upload RAMDISK artifact
         uses: actions/upload-artifact@v4
