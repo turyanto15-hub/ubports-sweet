@@ -84,9 +84,12 @@ jobs:
 
           ./scripts/config --file "$OUT/.config" \
             --enable ARM64_4K_PAGES \
-            --disable ARM64_LPA2 \
             --disable ARM64_16K_PAGES \
             --disable ARM64_64K_PAGES \
+            --disable ARM64_VA_BITS_52 \
+            --enable ARM64_VA_BITS_48 \
+            --disable ARM64_PA_BITS_52 \
+            --enable ARM64_PA_BITS_48 \
             --enable BLK_DEV_LOOP \
             --enable EXT4_FS \
             --enable EXFAT_FS \
@@ -104,7 +107,7 @@ jobs:
           echo "===== FINAL KERNEL CONFIGURATION ====="
 
           grep -E \
-            'CONFIG_ARM64_4K_PAGES|CONFIG_ARM64_VA_BITS|CONFIG_ARM64_PA_BITS|CONFIG_EXFAT_FS|CONFIG_EXT4_FS|CONFIG_BLK_DEV_LOOP' \
+            'CONFIG_ARM64_4K_PAGES|CONFIG_ARM64_VA_BITS|CONFIG_ARM64_PA_BITS|CONFIG_ARM64_LPA2|CONFIG_EXFAT_FS|CONFIG_EXT4_FS|CONFIG_BLK_DEV_LOOP' \
             "$OUT/.config" || true
 
       - name: Validate final kernel configuration
@@ -123,28 +126,47 @@ jobs:
             echo "OK: $1=y"
           }
 
+          echo "===== REQUIRED CONFIGURATION ====="
+
           require_config CONFIG_ARM64_4K_PAGES
+          require_config CONFIG_ARM64_VA_BITS_48
+          require_config CONFIG_ARM64_PA_BITS_48
+
           require_config CONFIG_BLK_DEV_LOOP
           require_config CONFIG_EXT4_FS
           require_config CONFIG_EXFAT_FS
           require_config CONFIG_NLS
           require_config CONFIG_NLS_UTF8
+
           require_config CONFIG_DRM
           require_config CONFIG_DRM_MSM
           require_config CONFIG_DRM_MSM_DSI
           require_config CONFIG_DRM_PANEL_SAMSUNG_AMS667YR01
           require_config CONFIG_TOUCHSCREEN_GOODIX_GTX8
 
-          echo "===== ARM64 ADDRESS CONFIG ====="
-          grep -E 'CONFIG_ARM64_(4K_PAGES|16K_PAGES|64K_PAGES|VA_BITS|PA_BITS|LPA2)' "$CONFIG" || true
-          
+          echo "===== ARM64 ADDRESS VALIDATION ====="
+
+          grep -E \
+            'CONFIG_ARM64_(4K_PAGES|16K_PAGES|64K_PAGES|VA_BITS|PA_BITS|LPA2)' \
+            "$CONFIG" || true
+
+          if ! grep -qx 'CONFIG_ARM64_VA_BITS=48' "$CONFIG"; then
+            echo "::error::ARM64 virtual address must be 48-bit"
+            exit 1
+          fi
+
+          if ! grep -qx 'CONFIG_ARM64_PA_BITS=48' "$CONFIG"; then
+            echo "::error::ARM64 physical address must be 48-bit"
+            exit 1
+          fi
+
           if grep -q '^CONFIG_ARM64_LPA2=y' "$CONFIG"; then
-            echo "::error::LPA2 must be disabled"
+            echo "::error::LPA2 is enabled unexpectedly"
             exit 1
           fi
 
           if grep -q '^CONFIG_EXFAT_FS=m' "$CONFIG"; then
-            echo "::error::EXFAT must be built into the kernel, not a module"
+            echo "::error::EXFAT must be built into the kernel"
             exit 1
           fi
 
@@ -218,11 +240,13 @@ jobs:
           Source commit: $EXPECTED_COMMIT
           Build targets: Image, sm7150-xiaomi-sweet.dtb
           ARM64 page size: 4K
+          ARM64 virtual address: 48-bit
+          ARM64 physical address: 48-bit
+          ARM64 LPA2: disabled
           Loop device: built-in
           Root image filesystem: ext4
           microSD filesystem: exFAT
           exFAT driver: built-in
-          LPA2: disabled
           DSC slice_per_pkt: 2
           Artifact purpose: Native UBports Sweet kernel
           EOF
