@@ -42,6 +42,7 @@ jobs:
           set -eux
           wget -O busybox.tar.bz2 \
             https://busybox.net/downloads/busybox-1.37.0.tar.bz2
+
           tar -xjf busybox.tar.bz2
           mv busybox-1.37.0 busybox
 
@@ -52,9 +53,10 @@ jobs:
 
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig
 
-          # Resolve all new Kconfig options using their defaults.
+          # Resolve all new configuration options using defaults.
           yes "" | make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- oldconfig
 
+          # Apply required configuration changes.
           python3 - <<'PY'
           from pathlib import Path
           import re
@@ -68,6 +70,8 @@ jobs:
               "LOSETUP": "y",
               "SWITCH_ROOT": "y",
               "MKNOD": "y",
+              "SHA1_HWACCEL": "n",
+              "SHA256_HWACCEL": "n",
           }
 
           for name, value in required.items():
@@ -76,57 +80,40 @@ jobs:
                   rf"|^# CONFIG_{re.escape(name)} is not set$"
               )
 
+              replacement = (
+                  f"CONFIG_{name}={value}"
+                  if value == "y"
+                  else f"# CONFIG_{name} is not set"
+              )
+
               config, count = re.subn(
                   pattern,
-                  f"CONFIG_{name}={value}",
+                  replacement,
                   config,
                   flags=re.MULTILINE
               )
 
               if count == 0:
-                  config += f"\nCONFIG_{name}={value}\n"
+                  config += f"\n{replacement}\n"
 
           path.write_text(config)
           PY
 
-          echo "===== BUSYBOX CONFIGURATION ====="
-          grep -E '^CONFIG_(STATIC|MDEV|LOSETUP|SWITCH_ROOT|MKNOD)=' .config
+          # Reprocess the modified configuration non-interactively.
+          yes "" | make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- oldconfig
 
-      - name: Fix watchdog unused-result warnings
-        working-directory: busybox
-        run: |
-          set -eux
+          echo "===== VERIFY BUSYBOX CONFIGURATION ====="
 
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
+          grep -qx 'CONFIG_STATIC=y' .config
+          grep -qx 'CONFIG_MDEV=y' .config
+          grep -qx 'CONFIG_LOSETUP=y' .config
+          grep -qx 'CONFIG_SWITCH_ROOT=y' .config
+          grep -qx 'CONFIG_MKNOD=y' .config
 
-          path = Path("miscutils/watchdog.c")
-          source = path.read_text()
+          grep -qx '# CONFIG_SHA1_HWACCEL is not set' .config
+          grep -qx '# CONFIG_SHA256_HWACCEL is not set' .config
 
-          replacements = [
-              (
-                  r'(?m)^([ \t]*)write\(\s*3\s*,\s*""\s*,\s*1\s*\);',
-                  r'\1(void)!write(3, "", 1);'
-              ),
-              (
-                  r'(?m)^([ \t]*)write\(\s*3\s*,\s*&V\s*,\s*1\s*\);',
-                  r'\1(void)!write(3, &V, 1);'
-              ),
-          ]
-
-          for pattern, replacement in replacements:
-              source, count = re.subn(pattern, replacement, source)
-              if count != 1:
-                  raise SystemExit(
-                      f"Watchdog patch expected one match, found {count}"
-                  )
-
-          path.write_text(source)
-          print("Watchdog source patched.")
-          PY
-
-          grep -n -C 2 'write(3' miscutils/watchdog.c
+          echo "BUSYBOX CONFIGURATION PASSED"
 
       - name: Build static ARM64 BusyBox
         working-directory: busybox
@@ -151,7 +138,7 @@ jobs:
             exit 1
           fi
 
-          echo "STATIC ARM64 BUILD PASSED"
+          echo "STATIC ARM64 BUSYBOX BUILD PASSED"
 
       - name: Verify BusyBox applets
         working-directory: busybox
