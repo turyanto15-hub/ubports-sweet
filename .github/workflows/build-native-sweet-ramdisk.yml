@@ -1,138 +1,114 @@
-
 name: Build Native Sweet RAMDISK
 
 on:
   workflow_dispatch:
 
 permissions:
-  actions: read
   contents: read
+  actions: read
 
 jobs:
   build-ramdisk:
+    name: Build ARM64 Native Sweet Initramfs
     runs-on: ubuntu-22.04
+    timeout-minutes: 45
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Find latest modules artifact
-        id: find_modules
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const owner = context.repo.owner;
-            const repo = context.repo.repo;
-            const artifactName = "NATIVE-UBPORT-SWEET-MODULES";
-
-            const runs = await github.paginate(
-              github.rest.actions.listWorkflowRunsForRepo,
-              {
-                owner,
-                repo,
-                status: "success",
-                per_page: 100
-              }
-            );
-
-            for (const run of runs) {
-              const result =
-                await github.rest.actions.listWorkflowRunArtifacts({
-                  owner,
-                  repo,
-                  run_id: run.id,
-                  per_page: 100
-                });
-
-              const artifact = result.data.artifacts.find(
-                a => a.name === artifactName && !a.expired
-              );
-
-              if (artifact) {
-                core.info(`Artifact found in run ${run.id}`);
-                core.setOutput("run_id", String(run.id));
-                return;
-              }
-            }
-
-            core.setFailed(
-              `Artifact ${artifactName} tidak ditemukan dalam 100 run sukses terbaru.`
-            );
-
-      - name: Download modules artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: NATIVE-UBPORT-SWEET-MODULES
-          run-id: ${{ steps.find_modules.outputs.run_id }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          path: modules-artifact
-
-      - name: Install dependencies
+      - name: Install build dependencies
         run: |
+          set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential gcc-aarch64-linux-gnu \
-            wget cpio gzip zstd file
+            build-essential \
+            gcc-aarch64-linux-gnu \
+            wget bzip2 cpio gzip file \
+            qemu-user
 
-      - name: Extract exFAT module
+      - name: Download and configure BusyBox
         run: |
-          set -e
-          mkdir -p module-work
-          find modules-artifact -name '*.tar.gz' \
-            -exec tar -xzf {} -C module-work \;
+          set -euo pipefail
 
-          MODULE="$(find module-work -name exfat.ko.zst | head -n 1)"
-          test -n "$MODULE"
-
-          zstd -d "$MODULE" -o module-work/exfat.ko
-          file module-work/exfat.ko
-
-
-      - name: Build static ARM64 BusyBox
-        run: |
-          set -e
           wget -q https://busybox.net/downloads/busybox-1.37.0.tar.bz2
-          tar -xf busybox-1.37.0.tar.bz2
+          tar -xjf busybox-1.37.0.tar.bz2
           cd busybox-1.37.0
 
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig
 
-          # Disable SHA-NI optimization causing sha1 symbol error
           sed -i \
-            -e 's/^CONFIG_SHA1_HWACCEL=y/# CONFIG_SHA1_HWACCEL is not set/' \
-            -e 's/^CONFIG_SHA1_HWACCEL=n/# CONFIG_SHA1_HWACCEL is not set/' \
-            .config
-
-          # Enable static binary
-          sed -i \
-            's/# CONFIG_STATIC is not set/CONFIG_STATIC=y/' \
+            -e 's/^# CONFIG_STATIC is not set/CONFIG_STATIC=y/' \
+            -e 's/^# CONFIG_MDEV is not set/CONFIG_MDEV=y/' \
+            -e 's/^# CONFIG_LOSETUP is not set/CONFIG_LOSETUP=y/' \
+            -e 's/^# CONFIG_SWITCH_ROOT is not set/CONFIG_SWITCH_ROOT=y/' \
+            -e 's/^# CONFIG_FEATURE_MOUNT_LOOP is not set/CONFIG_FEATURE_MOUNT_LOOP=y/' \
             .config
 
           make oldconfig </dev/null
 
-          grep -E 'CONFIG_STATIC=|CONFIG_SHA1_HWACCEL' .config || true
+          for option in \
+            CONFIG_STATIC \
+            CONFIG_MDEV \
+            CONFIG_LOSETUP \
+            CONFIG_SWITCH_ROOT \
+            CONFIG_FEATURE_MOUNT_LOOP; do
+            grep -qx "${option}=y" .config || {
+              echo "::error::Required BusyBox option missing: ${option}"
+              exit 1
+            }
+          done
+
+      - name: Compile static ARM64 BusyBox
+        run: |
+          set -euo pipefail
+
+          cd busybox-1.37.0
 
           make -j2 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
 
+          test -s busybox
+
+          aarch64-linux-gnu-readelf -h busybox | grep -q AArch64
+
+          if aarch64-linux-gnu-readelf -l busybox | grep -q INTERP; then
+            echo "::error::BusyBox is not statically linked"
+            exit 1
+          fi
+
+          qemu-aarch64 ./busybox --list > ../busybox-applets.txt
+
+          for applet in \
+            sh mount mkdir mknod sleep cat uname dmesg \
+            ls grep head tail wc readlink losetup \
+            switch_root mdev; do
+            grep -qx "$applet" ../busybox-applets.txt || {
+              echo "::error::Missing BusyBox applet: $applet"
+              exit 1
+            }
+          done
+
+          mkdir -p "$GITHUB_WORKSPACE/ramdisk"
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
             CONFIG_PREFIX="$GITHUB_WORKSPACE/ramdisk" install
 
       - name: Prepare Native Sweet ramdisk
         run: |
-          set -e
+          set -euo pipefail
+
           R="$GITHUB_WORKSPACE/ramdisk"
 
-          mkdir -p "$R"/{dev,proc,sys,run,tmp,mnt/sd,newroot,lib/modules}
-          cp module-work/exfat.ko "$R/lib/modules/exfat.ko"
+          mkdir -p "$R"/{dev,proc,sys,run,tmp,mnt/sd,newroot}
 
           cat > "$R/init" <<'INIT'
           #!/bin/sh
-          export PATH=/bin:/sbin
+
+          export PATH=/bin:/sbin:/usr/bin:/usr/sbin
           export HOME=/root
 
           SD=/mnt/sd
           ROOT=/newroot
-          IMAGE=sweet-system.img
+          IMAGE=system.img
           LOOP=/dev/loop0
 
           mkdir -p /dev /proc /sys /run /tmp "$SD" "$ROOT"
@@ -140,41 +116,64 @@ jobs:
           mount -t devtmpfs devtmpfs /dev
           mount -t proc proc /proc
           mount -t sysfs sysfs /sys
+
           mdev -s
 
-          echo "Loading exFAT module"
-          insmod /lib/modules/exfat.ko
+          echo
+          echo "=================================="
+          echo " NATIVE UBPORTS SWEET BOOT"
+          echo "=================================="
 
           FOUND=0
           COUNT=0
 
+          echo "Waiting for ext4 microSD..."
+
           while [ "$COUNT" -lt 90 ]; do
               mdev -s
-              for PART in /sys/class/block/mmcblk*p1; do
+
+              for PART in /sys/class/block/mmcblk*p*; do
                   [ -e "$PART" ] || continue
+
                   DEV="/dev/$(basename "$PART")"
-                  if mount -t exfat "$DEV" "$SD"; then
+                  [ -b "$DEV" ] || continue
+
+                  if mount -t ext4 -o rw "$DEV" "$SD" 2>/dev/null; then
                       FOUND=1
                       break
                   fi
               done
+
               [ "$FOUND" -eq 1 ] && break
+
               sleep 1
               COUNT=$((COUNT + 1))
           done
 
           if [ "$FOUND" -ne 1 ]; then
-              echo "ERROR: exFAT SD card not found"
+              echo "ERROR: ext4 microSD partition not found"
               exec sh
           fi
+
+          echo "microSD mounted."
 
           if [ ! -f "$SD/$IMAGE" ]; then
-              echo "ERROR: sweet-system.img not found"
+              echo "ERROR: system.img not found at microSD root"
               exec sh
           fi
 
-          mknod "$LOOP" b 7 0 2>/dev/null
-          losetup "$LOOP" "$SD/$IMAGE"
+          if [ ! -b "$LOOP" ]; then
+              mknod "$LOOP" b 7 0
+          fi
+
+          echo "Attaching system.img..."
+
+          if ! losetup "$LOOP" "$SD/$IMAGE"; then
+              echo "ERROR: loop device setup failed"
+              exec sh
+          fi
+
+          echo "Mounting Ubuntu root filesystem..."
 
           if ! mount -t ext4 -o rw "$LOOP" "$ROOT"; then
               echo "ERROR: Ubuntu rootfs mount failed"
@@ -182,11 +181,13 @@ jobs:
           fi
 
           if [ ! -x "$ROOT/sbin/init" ]; then
-              echo "ERROR: Ubuntu init not found"
+              echo "ERROR: /sbin/init not found in system.img"
               exec sh
           fi
 
-          mkdir -p "$ROOT/run" "$ROOT/dev" "$ROOT/proc" "$ROOT/sys" "$ROOT/mnt/sd"
+          mkdir -p "$ROOT/run" "$ROOT/dev" \
+              "$ROOT/proc" "$ROOT/sys" "$ROOT/mnt/sd"
+
           mount -t tmpfs tmpfs "$ROOT/run"
 
           mount --move /dev "$ROOT/dev"
@@ -194,20 +195,70 @@ jobs:
           mount --move /sys "$ROOT/sys"
           mount --move "$SD" "$ROOT/mnt/sd"
 
-          exec switch_root -c /dev/console "$ROOT" /sbin/init
+          echo "Switching to Ubuntu root filesystem..."
+
+          exec switch_root -c /dev/console \
+              "$ROOT" /sbin/init
+
+          echo "ERROR: switch_root returned"
+          exec sh
           INIT
 
           chmod 0755 "$R/init"
 
+          test -x "$R/bin/busybox"
+          test -x "$R/init"
+
       - name: Package ramdisk
         run: |
-          set -e
+          set -euo pipefail
+
           cd ramdisk
+
           find . -print0 | cpio --null -o -H newc \
-            --owner=0:0 | gzip -9 > ../native-sweet-ramdisk.cpio.gz
+            --owner=0:0 | gzip -n -9 > ../native-sweet-ramdisk.cpio.gz
+
           cd ..
+
           gzip -t native-sweet-ramdisk.cpio.gz
+
           sha256sum native-sweet-ramdisk.cpio.gz > SHA256SUMS
+
+          cat > RAMDISK-MANIFEST.txt <<'EOF'
+          Project: Native UBports Sweet
+          Device: Redmi Note 10 Pro
+          Codename: sweet
+          Architecture: ARM64
+          Initramfs: gzip compressed cpio newc
+          BusyBox: 1.37.0 static
+          microSD filesystem: ext4
+          Root filesystem image: system.img
+          Root filesystem format: ext4
+          Loop device: /dev/loop0
+          Root switch: switch_root
+          Status: Ramdisk build candidate
+          EOF
+
+      - name: Validate ramdisk archive
+        run: |
+          set -euo pipefail
+
+          mkdir verify
+          gzip -dc native-sweet-ramdisk.cpio.gz \
+            | (cd verify && cpio -idm --quiet)
+
+          test -x verify/init
+          test -x verify/bin/busybox
+          test -s native-sweet-ramdisk.cpio.gz
+
+          grep -q 'IMAGE=system.img' verify/init
+          grep -q 'mount -t ext4' verify/init
+          grep -q 'switch_root' verify/init
+
+          echo "===== RAMDISK CONTENTS ====="
+          find verify -maxdepth 2 -type f -o -type l | sort
+
+          echo "RAMDISK VALIDATION PASSED"
 
       - name: Upload ramdisk artifact
         uses: actions/upload-artifact@v4
@@ -216,5 +267,6 @@ jobs:
           path: |
             native-sweet-ramdisk.cpio.gz
             SHA256SUMS
+            RAMDISK-MANIFEST.txt
           if-no-files-found: error
           retention-days: 30
