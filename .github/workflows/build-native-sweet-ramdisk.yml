@@ -44,6 +44,7 @@ jobs:
           tar -xjf busybox.tar.bz2
           mv busybox-1.37.0 busybox
 
+
       - name: Configure BusyBox
         working-directory: busybox
         run: |
@@ -51,19 +52,30 @@ jobs:
 
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig
 
-          sed -i \
-            -e 's/^# CONFIG_STATIC is not set/CONFIG_STATIC=y/' \
-            -e 's/^# CONFIG_MDEV is not set/CONFIG_MDEV=y/' \
-            -e 's/^# CONFIG_LOSETUP is not set/CONFIG_LOSETUP=y/' \
-            -e 's/^# CONFIG_SWITCH_ROOT is not set/CONFIG_SWITCH_ROOT=y/' \
-            -e 's/^# CONFIG_FEATURE_MOUNT_LOOP is not set/CONFIG_FEATURE_MOUNT_LOOP=y/' \
-            -e 's/^# CONFIG_MKNOD is not set/CONFIG_MKNOD=y/' \
-            .config
+          # Set required configuration
+          scripts/config --enable STATIC
+          scripts/config --enable MDEV
+          scripts/config --enable LOSETUP
+          scripts/config --enable SWITCH_ROOT
+          scripts/config --enable FEATURE_MOUNT_LOOP
+          scripts/config --enable MKNOD
 
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- oldconfig </dev/null
+          # Disable interactive unanswered configuration
+          yes "" | make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- oldconfig
 
-          echo "===== BUSYBOX CONFIG ====="
+          echo "===== VERIFY BUSYBOX CONFIG ====="
+
           grep -E '^CONFIG_(STATIC|MDEV|LOSETUP|SWITCH_ROOT|FEATURE_MOUNT_LOOP|MKNOD)=' .config
+
+          # Hard validation
+          for option in STATIC MDEV LOSETUP SWITCH_ROOT FEATURE_MOUNT_LOOP MKNOD; do
+            grep -qx "CONFIG_${option}=y" .config || {
+              echo "ERROR: CONFIG_${option} is not enabled"
+              exit 1
+            }
+          done
+
+          echo "BUSYBOX CONFIGURATION PASSED"
 
       - name: Fix watchdog warning
         working-directory: busybox
